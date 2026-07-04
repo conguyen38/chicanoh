@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Konva from "konva";
 import {
   Stage,
@@ -10,25 +10,34 @@ import {
 } from "react-konva";
 import {
   AlignCenter,
+  AlignHorizontalJustifyCenter,
+  AlignHorizontalJustifyEnd,
+  AlignHorizontalJustifyStart,
   AlignLeft,
   AlignRight,
+  AlignVerticalJustifyCenter,
+  AlignVerticalJustifyEnd,
+  AlignVerticalJustifyStart,
   BadgeCheck,
+  Check,
+  ChevronDown,
   Columns3,
   Download,
+  Eye,
   FileSpreadsheet,
   ImageUp,
   Lock,
   LogOut,
   Maximize2,
+  Pipette,
   Plus,
-  RefreshCw,
+  Rows3,
   Save,
   Search,
   SlidersHorizontal,
   Sparkles,
   TextCursorInput,
   Type,
-  WandSparkles,
   X,
   ZoomIn,
   ZoomOut
@@ -64,6 +73,14 @@ type TextLayer = {
   textTransform: "none" | "uppercase" | "lowercase";
 };
 
+type LayerBounds = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 type Template = {
   id: string;
   name: string;
@@ -89,11 +106,225 @@ type AppState = {
   customFonts: CustomFont[];
 };
 
+const FALLBACK_TEXT_LAYER: TextLayer = {
+  id: "layer_fallback",
+  name: "Lớp chữ",
+  column: "",
+  x: 80,
+  y: 80,
+  width: 320,
+  fontFamily: "Be Vietnam Pro",
+  fontSize: 42,
+  fontWeight: "700",
+  color: "#071025",
+  align: "left",
+  lineHeight: 1.16,
+  letterSpacing: 0,
+  textTransform: "none"
+};
+
+declare global {
+  interface Window {
+    EyeDropper?: new () => {
+      open: () => Promise<{ sRGBHex: string }>;
+    };
+  }
+}
+
+type SelectOption = {
+  value: string;
+  label: string;
+};
+
+type CustomSelectProps = {
+  value: string;
+  options: SelectOption[];
+  onChange: (value: string) => void;
+  disabled?: boolean;
+};
+
+type HexColorInputProps = {
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+};
+
+function normalizeHexColor(value: string) {
+  const raw = value.trim().replace(/^#/, "");
+  if (/^[0-9a-fA-F]{3}$/.test(raw)) {
+    return `#${raw
+      .split("")
+      .map((char) => `${char}${char}`)
+      .join("")
+      .toLowerCase()}`;
+  }
+  if (/^[0-9a-fA-F]{6}$/.test(raw)) {
+    return `#${raw.toLowerCase()}`;
+  }
+  return null;
+}
+
+function HexColorInput({ value, onChange, disabled = false }: HexColorInputProps) {
+  const [draft, setDraft] = useState(value.toUpperCase());
+  const nativeColorRef = useRef<HTMLInputElement>(null);
+  const canPickScreenColor = typeof window !== "undefined" && Boolean(window.EyeDropper);
+
+  useEffect(() => {
+    setDraft(value.toUpperCase());
+  }, [value]);
+
+  function handleChange(nextValue: string) {
+    setDraft(nextValue.toUpperCase());
+    const normalized = normalizeHexColor(nextValue);
+    if (normalized) onChange(normalized);
+  }
+
+  function handleBlur() {
+    const normalized = normalizeHexColor(draft);
+    setDraft((normalized || value).toUpperCase());
+  }
+
+  async function pickScreenColor() {
+    if (disabled || !window.EyeDropper) return;
+    try {
+      const result = await new window.EyeDropper().open();
+      handleChange(result.sRGBHex);
+    } catch {
+      // User cancelled the picker.
+    }
+  }
+
+  return (
+    <div className="hex-color-field">
+      <input
+        ref={nativeColorRef}
+        className="native-color-input"
+        type="color"
+        value={value}
+        disabled={disabled}
+        onChange={(event) => handleChange(event.target.value)}
+      />
+      <button
+        type="button"
+        className="hex-color-swatch"
+        style={{ backgroundColor: value }}
+        title="Chọn màu"
+        disabled={disabled}
+        onClick={() => nativeColorRef.current?.click()}
+      />
+      <input
+        type="text"
+        value={draft}
+        disabled={disabled}
+        maxLength={7}
+        spellCheck={false}
+        placeholder="#000000"
+        aria-label="Mã màu hex"
+        onChange={(event) => handleChange(event.target.value)}
+        onBlur={handleBlur}
+      />
+      <button
+        type="button"
+        className="hex-color-picker-btn"
+        title="Hút màu trên ảnh"
+        disabled={disabled || !canPickScreenColor}
+        onClick={pickScreenColor}
+      >
+        <Pipette size={16} />
+      </button>
+    </div>
+  );
+}
+
+function CustomSelect({ value, options, onChange, disabled = false }: CustomSelectProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const selectedOption = options.find((option) => option.value === value) || options[0];
+
+  function commitValue(nextValue: string) {
+    onChange(nextValue);
+    setIsOpen(false);
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
+    if (disabled) return;
+    const currentIndex = Math.max(
+      0,
+      options.findIndex((option) => option.value === value)
+    );
+
+    if (event.key === "Escape") {
+      setIsOpen(false);
+      return;
+    }
+
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      setIsOpen((current) => !current);
+      return;
+    }
+
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!options.length) return;
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      const nextIndex = (currentIndex + direction + options.length) % options.length;
+      commitValue(options[nextIndex].value);
+    }
+  }
+
+  return (
+    <div
+      className={`custom-select ${isOpen ? "open" : ""} ${disabled ? "disabled" : ""}`}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setIsOpen(false);
+        }
+      }}
+    >
+      <button
+        type="button"
+        className="custom-select-trigger"
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        onClick={() => setIsOpen((current) => !current)}
+        onKeyDown={handleKeyDown}
+      >
+        <span>{selectedOption?.label || ""}</span>
+        <ChevronDown size={18} />
+      </button>
+
+      {isOpen ? (
+        <div className="custom-select-menu" role="listbox">
+          {options.map((option) => {
+            const isSelected = option.value === selectedOption?.value;
+            return (
+              <button
+                type="button"
+                key={option.value}
+                className={isSelected ? "custom-select-option selected" : "custom-select-option"}
+                role="option"
+                aria-selected={isSelected}
+                onClick={() => commitValue(option.value)}
+              >
+                <span>{option.label}</span>
+                {isSelected ? <Check size={16} /> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 const STORAGE_KEY = "oh-property-maker-state-v2";
 const ADMIN_KEY = "oh-property-maker-admin-ok";
+const ADMIN_ACCOUNT_KEY = "oh-property-maker-admin-account";
+const ADMIN_PASSWORD_HASH_KEY = "oh-property-maker-admin-password-hash";
+const DEFAULT_ADMIN_ACCOUNT = "admin";
 const DEFAULT_ADMIN_HASH =
-  "704e2322e3ad3b2c05b77a00ba673175f07e5769a4ba011c101044054a1960a3";
-const ADMIN_HASH = import.meta.env.VITE_ADMIN_CODE_HASH || DEFAULT_ADMIN_HASH;
+  "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918";
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 0.15;
@@ -111,6 +342,18 @@ function normalizeText(value: string) {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/\u0111/g, "d")
     .replace(/[^a-z0-9]+/g, "");
+}
+
+function getStoredAdminAccount() {
+  return localStorage.getItem(ADMIN_ACCOUNT_KEY) || DEFAULT_ADMIN_ACCOUNT;
+}
+
+function getStoredAdminPasswordHash() {
+  return (
+    localStorage.getItem(ADMIN_PASSWORD_HASH_KEY) ||
+    import.meta.env.VITE_ADMIN_CODE_HASH ||
+    DEFAULT_ADMIN_HASH
+  );
 }
 
 function toFileSlug(value: string) {
@@ -227,6 +470,93 @@ function defaultTemplateImage() {
     <text x="130" y="126" fill="#ffffff" font-family="Arial" font-size="28" font-weight="700">OneHousing</text>
   </svg>`;
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+function normalizePositiveNumber(value: unknown, fallback: number) {
+  const nextValue = Number(value);
+  return Number.isFinite(nextValue) && nextValue > 0 ? nextValue : fallback;
+}
+
+function normalizeLayer(layer: Partial<TextLayer> | null | undefined, index = 0): TextLayer {
+  const align = layer?.align;
+  const textTransform = layer?.textTransform;
+  return {
+    ...FALLBACK_TEXT_LAYER,
+    ...layer,
+    id: typeof layer?.id === "string" && layer.id ? layer.id : uid("layer"),
+    name: typeof layer?.name === "string" && layer.name ? layer.name : `Lớp chữ ${index + 1}`,
+    column: typeof layer?.column === "string" ? layer.column : "",
+    x: Number.isFinite(Number(layer?.x)) ? Number(layer?.x) : FALLBACK_TEXT_LAYER.x,
+    y: Number.isFinite(Number(layer?.y)) ? Number(layer?.y) : FALLBACK_TEXT_LAYER.y,
+    width: normalizePositiveNumber(layer?.width, FALLBACK_TEXT_LAYER.width),
+    fontFamily:
+      typeof layer?.fontFamily === "string" && layer.fontFamily
+        ? layer.fontFamily
+        : FALLBACK_TEXT_LAYER.fontFamily,
+    fontSize: normalizePositiveNumber(layer?.fontSize, FALLBACK_TEXT_LAYER.fontSize),
+    fontWeight:
+      typeof layer?.fontWeight === "string" && layer.fontWeight
+        ? layer.fontWeight
+        : FALLBACK_TEXT_LAYER.fontWeight,
+    color:
+      typeof layer?.color === "string" && normalizeHexColor(layer.color)
+        ? normalizeHexColor(layer.color)!
+        : FALLBACK_TEXT_LAYER.color,
+    align: align === "center" || align === "right" || align === "left" ? align : "left",
+    lineHeight: normalizePositiveNumber(layer?.lineHeight, FALLBACK_TEXT_LAYER.lineHeight),
+    letterSpacing: Number.isFinite(Number(layer?.letterSpacing))
+      ? Number(layer?.letterSpacing)
+      : FALLBACK_TEXT_LAYER.letterSpacing,
+    textTransform:
+      textTransform === "uppercase" || textTransform === "lowercase" || textTransform === "none"
+        ? textTransform
+        : "none"
+  };
+}
+
+function normalizeTemplate(template: Partial<Template> | null | undefined, index = 0): Template {
+  const name =
+    template?.name === "OneHousing 4:5"
+      ? "Ảnh mẫu OneHousing"
+      : typeof template?.name === "string" && template.name.trim()
+        ? template.name
+        : `Page ${index + 1}`;
+  return {
+    id: typeof template?.id === "string" && template.id ? template.id : uid("template"),
+    name,
+    width: normalizePositiveNumber(template?.width, 1080),
+    height: normalizePositiveNumber(template?.height, 1350),
+    backgroundDataUrl:
+      typeof template?.backgroundDataUrl === "string"
+        ? template.backgroundDataUrl
+        : defaultTemplateImage(),
+    layers: Array.isArray(template?.layers)
+      ? template.layers.map((layer, layerIndex) => normalizeLayer(layer, layerIndex))
+      : [],
+    updatedAt:
+      typeof template?.updatedAt === "string" && template.updatedAt
+        ? template.updatedAt
+        : new Date().toISOString()
+  };
+}
+
+function getNextPageName(templates: Template[]) {
+  const usedNumbers = new Set<number>();
+  templates.forEach((template) => {
+    const match = template.name.trim().match(/^page\s+(\d+)$/i);
+    if (!match) return;
+    usedNumbers.add(Number(match[1]));
+  });
+
+  let pageNumber = 1;
+  while (usedNumbers.has(pageNumber)) {
+    pageNumber += 1;
+  }
+  return `Page ${pageNumber}`;
+}
+
+function isBlankTemplate(template: Template | undefined) {
+  return Boolean(template && !template.backgroundDataUrl && template.layers.length === 0);
 }
 
 function createInitialState(): AppState {
@@ -350,13 +680,15 @@ function loadState() {
     if (!saved) return createInitialState();
     const parsed = JSON.parse(saved) as AppState;
     if (!parsed.templates?.length || !parsed.datasets?.length) return createInitialState();
+    const templates = parsed.templates.map((template, index) => normalizeTemplate(template, index));
+    const activeTemplateId = templates.some((template) => template.id === parsed.activeTemplateId)
+      ? parsed.activeTemplateId
+      : templates[0].id;
     return {
       ...parsed,
-      templates: parsed.templates.map((template) =>
-        template.name === "OneHousing 4:5"
-          ? { ...template, name: "Ảnh mẫu OneHousing" }
-          : template
-      )
+      templates,
+      activeTemplateId,
+      customFonts: Array.isArray(parsed.customFonts) ? parsed.customFonts : []
     };
   } catch {
     return createInitialState();
@@ -369,6 +701,11 @@ function useImage(src: string) {
   useEffect(() => {
     let active = true;
     setImage(null);
+    if (!src) {
+      return () => {
+        active = false;
+      };
+    }
     loadHtmlImage(src)
       .then((loaded) => {
         if (active) setImage(loaded);
@@ -455,9 +792,19 @@ export default function App() {
   const [selectedRowIndex, setSelectedRowIndex] = useState(0);
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>(["layer_code"]);
   const [isAdmin, setIsAdmin] = useState(() => localStorage.getItem(ADMIN_KEY) === "1");
+  const [editingPageId, setEditingPageId] = useState<string | null>(null);
+  const [pagePendingDeleteId, setPagePendingDeleteId] = useState<string | null>(null);
+  const [adminAccount, setAdminAccount] = useState(() => getStoredAdminAccount());
+  const [adminLoginName, setAdminLoginName] = useState(() => getStoredAdminAccount());
   const [adminCode, setAdminCode] = useState("");
   const [adminError, setAdminError] = useState("");
   const [showAdminModal, setShowAdminModal] = useState(false);
+  const [showAdminSettingsModal, setShowAdminSettingsModal] = useState(false);
+  const [adminSettingsName, setAdminSettingsName] = useState(() => getStoredAdminAccount());
+  const [adminNewPassword, setAdminNewPassword] = useState("");
+  const [adminConfirmPassword, setAdminConfirmPassword] = useState("");
+  const [adminSettingsMessage, setAdminSettingsMessage] = useState("");
+  const [adminSettingsError, setAdminSettingsError] = useState("");
   const [showDatasetLibraryModal, setShowDatasetLibraryModal] = useState(false);
   const [showDataImportModal, setShowDataImportModal] = useState(false);
   const [showTemplateLibraryModal, setShowTemplateLibraryModal] = useState(false);
@@ -466,6 +813,7 @@ export default function App() {
   const [selectedDatasetIds, setSelectedDatasetIds] = useState<string[]>([]);
   const [datasetLibraryError, setDatasetLibraryError] = useState("");
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
+  const [previewTemplate, setPreviewTemplate] = useState<Template | null>(null);
   const [pendingTemplateUpload, setPendingTemplateUpload] = useState<{
     name: string;
     dataUrl: string;
@@ -480,8 +828,12 @@ export default function App() {
   const [isDraggingDataFile, setIsDraggingDataFile] = useState(false);
   const [search, setSearch] = useState("");
   const [isExporting, setIsExporting] = useState(false);
+  const [storageWarning, setStorageWarning] = useState("");
+  const [exportMimeType, setExportMimeType] = useState<"image/png" | "image/jpeg">("image/png");
+  const [exportScale, setExportScale] = useState<"1" | "0.5" | "0.75">("1");
   const [stageWidth, setStageWidth] = useState(0);
   const [zoomLevel, setZoomLevel] = useState(1);
+  const [isCanvasPanning, setIsCanvasPanning] = useState(false);
   const [selectionBox, setSelectionBox] = useState({
     visible: false,
     x: 0,
@@ -493,10 +845,26 @@ export default function App() {
   const stageRef = useRef<Konva.Stage>(null);
   const transformerRef = useRef<Konva.Transformer>(null);
   const canvasWrapRef = useRef<HTMLDivElement>(null);
+  const canvasShellRef = useRef<HTMLDivElement>(null);
   const textRefs = useRef<Record<string, Konva.Text>>({});
   const selectionStartRef = useRef<{ x: number; y: number } | null>(null);
   const isSelectingRef = useRef(false);
   const isZoomShortcutPressedRef = useRef(false);
+  const appStateRef = useRef(appState);
+  const selectedLayerIdsRef = useRef(selectedLayerIds);
+  const isAdminRef = useRef(isAdmin);
+  const canvasPanRef = useRef<{
+    x: number;
+    y: number;
+    scrollLeft: number;
+    scrollTop: number;
+  } | null>(null);
+  const zoomAnchorRef = useRef<{
+    pointerX: number;
+    pointerY: number;
+    logicalX: number;
+    logicalY: number;
+  } | null>(null);
   const groupDragRef = useRef<{
     activeLayerId: string;
     startX: number;
@@ -510,6 +878,9 @@ export default function App() {
       appState.templates[0],
     [appState.activeTemplateId, appState.templates]
   );
+  const pagePendingDelete = pagePendingDeleteId
+    ? appState.templates.find((item) => item.id === pagePendingDeleteId) || null
+    : null;
 
   const dataset = useMemo(
     () =>
@@ -559,7 +930,14 @@ export default function App() {
   const zoomPercent = Math.round(zoomLevel * 100);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
+      setStorageWarning("");
+    } catch {
+      setStorageWarning(
+        "Không lưu được dữ liệu vào trình duyệt vì dung lượng ảnh quá lớn. Trang mới vẫn dùng được trong phiên hiện tại."
+      );
+    }
   }, [appState]);
 
   useEffect(() => {
@@ -579,6 +957,47 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const shell = canvasShellRef.current;
+    if (!shell) return;
+
+    const lockScrollWhileZooming = (event: WheelEvent) => {
+      if (!isZoomShortcutPressedRef.current) return;
+      event.preventDefault();
+    };
+
+    shell.addEventListener("wheel", lockScrollWhileZooming, { passive: false });
+    return () => shell.removeEventListener("wheel", lockScrollWhileZooming);
+  }, []);
+
+  useLayoutEffect(() => {
+    const anchor = zoomAnchorRef.current;
+    const shell = canvasShellRef.current;
+    const stage = stageRef.current;
+    if (!anchor || !shell || !stage) return;
+    const shellRect = shell.getBoundingClientRect();
+    const stageRect = stage.container().getBoundingClientRect();
+    const nextLeft =
+      stageRect.left -
+      shellRect.left +
+      shell.scrollLeft +
+      anchor.logicalX * stageScale -
+      anchor.pointerX;
+    const nextTop =
+      stageRect.top -
+      shellRect.top +
+      shell.scrollTop +
+      anchor.logicalY * stageScale -
+      anchor.pointerY;
+    shell.scrollLeft = nextLeft;
+    shell.scrollTop = nextTop;
+    requestAnimationFrame(() => {
+      shell.scrollLeft = nextLeft;
+      shell.scrollTop = nextTop;
+    });
+    zoomAnchorRef.current = null;
+  }, [zoomLevel, stageScale]);
+
+  useEffect(() => {
     if (selectedRowIndex >= dataset.rows.length) {
       setSelectedRowIndex(0);
     }
@@ -595,11 +1014,78 @@ export default function App() {
   }, [selectedLayerIds, template.layers]);
 
   useEffect(() => {
+    appStateRef.current = appState;
+    selectedLayerIdsRef.current = selectedLayerIds;
+    isAdminRef.current = isAdmin;
+  }, [appState, selectedLayerIds, isAdmin]);
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isEditableTarget(event.target)) return;
       if (event.key.toLowerCase() === "z") {
         isZoomShortcutPressedRef.current = true;
+        return;
       }
+
+      const selectedIds = selectedLayerIdsRef.current;
+      if (
+        (event.key === "Backspace" || event.key === "Delete") &&
+        isAdminRef.current &&
+        selectedIds.length
+      ) {
+        event.preventDefault();
+        const selectedIdSet = new Set(selectedIds);
+        setAppState((current) => ({
+          ...current,
+          templates: current.templates.map((item) =>
+            item.id === current.activeTemplateId
+              ? {
+                  ...item,
+                  updatedAt: new Date().toISOString(),
+                  layers: item.layers.filter((layer) => !selectedIdSet.has(layer.id))
+                }
+              : item
+          )
+        }));
+        setSelectedLayerIds([]);
+        return;
+      }
+
+      const arrowMoves: Record<string, { x: number; y: number }> = {
+        ArrowLeft: { x: -1, y: 0 },
+        ArrowRight: { x: 1, y: 0 },
+        ArrowUp: { x: 0, y: -1 },
+        ArrowDown: { x: 0, y: 1 }
+      };
+      const move = arrowMoves[event.key];
+      if (!move || !isAdminRef.current || !selectedIds.length) {
+        return;
+      }
+
+      event.preventDefault();
+      const step = event.shiftKey ? 10 : 1;
+      const selectedIdSet = new Set(selectedIds);
+      setAppState((current) => ({
+        ...current,
+        templates: current.templates.map((item) =>
+          item.id === current.activeTemplateId
+            ? {
+                ...item,
+                updatedAt: new Date().toISOString(),
+                layers: item.layers.map((layer) =>
+                  selectedIdSet.has(layer.id)
+                    ? {
+                        ...layer,
+                        x: Math.round(layer.x + move.x * step),
+                        y: Math.round(layer.y + move.y * step)
+                      }
+                    : layer
+                )
+              }
+            : item
+        )
+      }));
+      requestAnimationFrame(() => transformerRef.current?.forceUpdate());
     };
     const handleKeyUp = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() === "z") {
@@ -638,6 +1124,166 @@ export default function App() {
         selectedLayerIds.includes(layer.id) ? { ...layer, ...patch } : layer
       )
     }));
+  }
+
+  function getSelectedLayerBounds() {
+    return selectedLayers.map((layer) => {
+      const node = textRefs.current[layer.id];
+      if (node) {
+        const parentLayer = node.getLayer();
+        const rect = parentLayer
+          ? node.getClientRect({ relativeTo: parentLayer })
+          : node.getClientRect();
+        return {
+          id: layer.id,
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height
+        };
+      }
+
+      return {
+        id: layer.id,
+        x: layer.x,
+        y: layer.y,
+        width: layer.width,
+        height: Math.max(layer.fontSize, layer.fontSize * layer.lineHeight)
+      };
+    });
+  }
+
+  function getBoundsUnion(bounds: LayerBounds[]) {
+    const left = Math.min(...bounds.map((item) => item.x));
+    const top = Math.min(...bounds.map((item) => item.y));
+    const right = Math.max(...bounds.map((item) => item.x + item.width));
+    const bottom = Math.max(...bounds.map((item) => item.y + item.height));
+    return {
+      x: left,
+      y: top,
+      width: right - left,
+      height: bottom - top
+    };
+  }
+
+  function applyLayerPositions(positions: Record<string, { x: number; y: number }>) {
+    updateTemplate((current) => ({
+      ...current,
+      updatedAt: new Date().toISOString(),
+      layers: current.layers.map((layer) =>
+        positions[layer.id] ? { ...layer, ...positions[layer.id] } : layer
+      )
+    }));
+  }
+
+  function alignSelectedLayers(
+    axis: "horizontal" | "vertical",
+    placement: "start" | "center" | "end"
+  ) {
+    if (!isAdmin || selectedLayers.length < 2) return;
+    const bounds = getSelectedLayerBounds();
+    const group = getBoundsUnion(bounds);
+    const byId = new Map(bounds.map((item) => [item.id, item]));
+    const positions = selectedLayers.reduce<Record<string, { x: number; y: number }>>(
+      (nextPositions, layer) => {
+        const item = byId.get(layer.id);
+        if (!item) return nextPositions;
+        let targetX = item.x;
+        let targetY = item.y;
+
+        if (axis === "horizontal") {
+          if (placement === "start") targetX = group.x;
+          if (placement === "center") targetX = group.x + (group.width - item.width) / 2;
+          if (placement === "end") targetX = group.x + group.width - item.width;
+        } else {
+          if (placement === "start") targetY = group.y;
+          if (placement === "center") targetY = group.y + (group.height - item.height) / 2;
+          if (placement === "end") targetY = group.y + group.height - item.height;
+        }
+
+        nextPositions[layer.id] = {
+          x: Math.round(layer.x + targetX - item.x),
+          y: Math.round(layer.y + targetY - item.y)
+        };
+        return nextPositions;
+      },
+      {}
+    );
+    applyLayerPositions(positions);
+  }
+
+  function distributeSelectedLayers(axis: "horizontal" | "vertical") {
+    if (!isAdmin || selectedLayers.length < 3) return;
+    const bounds = getSelectedLayerBounds();
+    const group = getBoundsUnion(bounds);
+    const sorted = [...bounds].sort((a, b) =>
+      axis === "horizontal" ? a.x - b.x : a.y - b.y
+    );
+    const totalSize = sorted.reduce(
+      (sum, item) => sum + (axis === "horizontal" ? item.width : item.height),
+      0
+    );
+    const groupSize = axis === "horizontal" ? group.width : group.height;
+    const gap = (groupSize - totalSize) / (sorted.length - 1);
+    let cursor = axis === "horizontal" ? group.x : group.y;
+    const byId = new Map(selectedLayers.map((layer) => [layer.id, layer]));
+    const positions: Record<string, { x: number; y: number }> = {};
+
+    sorted.forEach((item) => {
+      const layer = byId.get(item.id);
+      if (!layer) return;
+      positions[item.id] = {
+        x: Math.round(axis === "horizontal" ? layer.x + cursor - item.x : layer.x),
+        y: Math.round(axis === "vertical" ? layer.y + cursor - item.y : layer.y)
+      };
+      cursor += (axis === "horizontal" ? item.width : item.height) + gap;
+    });
+
+    applyLayerPositions(positions);
+  }
+
+  function tidySelectedLayers() {
+    if (!isAdmin || selectedLayers.length < 2) return;
+    const bounds = getSelectedLayerBounds();
+    const group = getBoundsUnion(bounds);
+    const mainAxis: "horizontal" | "vertical" =
+      group.width > group.height ? "horizontal" : "vertical";
+    const sorted = [...bounds].sort((a, b) =>
+      mainAxis === "horizontal" ? a.x - b.x : a.y - b.y
+    );
+    const totalSize = sorted.reduce(
+      (sum, item) => sum + (mainAxis === "horizontal" ? item.width : item.height),
+      0
+    );
+    const groupSize = mainAxis === "horizontal" ? group.width : group.height;
+    const gap = selectedLayers.length >= 3 ? (groupSize - totalSize) / (sorted.length - 1) : 0;
+    let cursor = mainAxis === "horizontal" ? group.x : group.y;
+    const byId = new Map(selectedLayers.map((layer) => [layer.id, layer]));
+    const positions: Record<string, { x: number; y: number }> = {};
+
+    sorted.forEach((item) => {
+      const layer = byId.get(item.id);
+      if (!layer) return;
+      const targetX =
+        mainAxis === "horizontal"
+          ? selectedLayers.length >= 3
+            ? cursor
+            : item.x
+          : group.x;
+      const targetY =
+        mainAxis === "vertical"
+          ? selectedLayers.length >= 3
+            ? cursor
+            : item.y
+          : group.y;
+      positions[item.id] = {
+        x: Math.round(layer.x + targetX - item.x),
+        y: Math.round(layer.y + targetY - item.y)
+      };
+      cursor += (mainAxis === "horizontal" ? item.width : item.height) + gap;
+    });
+
+    applyLayerPositions(positions);
   }
 
   function addTextLayer(column: string, x = 120, y = 120) {
@@ -679,13 +1325,19 @@ export default function App() {
   async function handleAdminUnlock(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setAdminError("");
+    if (adminLoginName.trim() !== getStoredAdminAccount()) {
+      setAdminError("Tài khoản quản trị không đúng");
+      return;
+    }
     const hash = await sha256(adminCode.trim());
-    if (hash !== ADMIN_HASH) {
-      setAdminError("Mã quản trị không đúng");
+    if (hash !== getStoredAdminPasswordHash()) {
+      setAdminError("Mật khẩu quản trị không đúng");
       return;
     }
     localStorage.setItem(ADMIN_KEY, "1");
     setIsAdmin(true);
+    setAdminAccount(getStoredAdminAccount());
+    setAdminLoginName(getStoredAdminAccount());
     setAdminCode("");
     setShowAdminModal(false);
   }
@@ -694,6 +1346,46 @@ export default function App() {
     localStorage.removeItem(ADMIN_KEY);
     setIsAdmin(false);
     setSelectedLayerIds([]);
+  }
+
+  function openAdminSettings() {
+    if (!isAdmin) return;
+    const account = getStoredAdminAccount();
+    setAdminSettingsName(account);
+    setAdminNewPassword("");
+    setAdminConfirmPassword("");
+    setAdminSettingsError("");
+    setAdminSettingsMessage("");
+    setShowAdminSettingsModal(true);
+  }
+
+  async function saveAdminSettings(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAdminSettingsError("");
+    setAdminSettingsMessage("");
+    const nextAccount = adminSettingsName.trim();
+    if (!nextAccount) {
+      setAdminSettingsError("Vui lòng nhập tên tài khoản");
+      return;
+    }
+    if (adminNewPassword || adminConfirmPassword) {
+      if (adminNewPassword.length < 4) {
+        setAdminSettingsError("Mật khẩu mới cần ít nhất 4 ký tự");
+        return;
+      }
+      if (adminNewPassword !== adminConfirmPassword) {
+        setAdminSettingsError("Xác nhận mật khẩu chưa khớp");
+        return;
+      }
+      localStorage.setItem(ADMIN_PASSWORD_HASH_KEY, await sha256(adminNewPassword.trim()));
+      setAdminNewPassword("");
+      setAdminConfirmPassword("");
+    }
+    localStorage.setItem(ADMIN_ACCOUNT_KEY, nextAccount);
+    setAdminAccount(nextAccount);
+    setAdminLoginName(nextAccount);
+    setAdminSettingsName(nextAccount);
+    setAdminSettingsMessage("Đã lưu thông tin quản trị");
   }
 
   function openTemplateLibraryModal() {
@@ -708,6 +1400,7 @@ export default function App() {
     setTemplateLibraryError("");
     setSelectedTemplateIds([]);
     setPendingTemplateUpload(null);
+    setPreviewTemplate(null);
   }
 
   async function prepareTemplateUpload(file: File | undefined) {
@@ -725,6 +1418,21 @@ export default function App() {
 
   function savePendingTemplateUpload() {
     if (!pendingTemplateUpload || !isAdmin) return;
+    if (isBlankTemplate(template)) {
+      updateTemplate((current) => ({
+        ...current,
+        width: pendingTemplateUpload.width,
+        height: pendingTemplateUpload.height,
+        backgroundDataUrl: pendingTemplateUpload.dataUrl,
+        updatedAt: new Date().toISOString()
+      }));
+      setPendingTemplateUpload(null);
+      setSelectedLayerIds([]);
+      setZoomLevel(1);
+      closeTemplateLibraryModal();
+      return;
+    }
+
     const nextTemplate: Template = {
       id: uid("template"),
       name: pendingTemplateUpload.name.trim() || "Ảnh mẫu mới",
@@ -747,6 +1455,24 @@ export default function App() {
   function importTemplateToEditor(templateId: string) {
     const nextTemplate = appState.templates.find((item) => item.id === templateId);
     if (!nextTemplate) return;
+    if (
+      template.id !== templateId &&
+      isBlankTemplate(template) &&
+      nextTemplate.backgroundDataUrl
+    ) {
+      updateTemplate((current) => ({
+        ...current,
+        width: nextTemplate.width,
+        height: nextTemplate.height,
+        backgroundDataUrl: nextTemplate.backgroundDataUrl,
+        updatedAt: new Date().toISOString()
+      }));
+      setSelectedLayerIds([]);
+      setZoomLevel(1);
+      closeTemplateLibraryModal();
+      return;
+    }
+
     setAppState((current) => ({
       ...current,
       activeTemplateId: templateId
@@ -754,6 +1480,76 @@ export default function App() {
     setSelectedLayerIds(nextTemplate.layers[0] ? [nextTemplate.layers[0].id] : []);
     setZoomLevel(1);
     closeTemplateLibraryModal();
+  }
+
+  function activatePage(templateId: string) {
+    const nextTemplate = appState.templates.find((item) => item.id === templateId);
+    if (!nextTemplate) return;
+    setAppState((current) => ({
+      ...current,
+      activeTemplateId: templateId
+    }));
+    setSelectedLayerIds(nextTemplate.layers[0] ? [nextTemplate.layers[0].id] : []);
+    setZoomLevel(1);
+  }
+
+  function addPage() {
+    const currentState = appStateRef.current;
+    const nextTemplate: Template = {
+      id: uid("template"),
+      name: getNextPageName(currentState.templates),
+      width: 1080,
+      height: 1350,
+      backgroundDataUrl: "",
+      layers: [],
+      updatedAt: new Date().toISOString()
+    };
+    const nextState = {
+      ...currentState,
+      templates: [nextTemplate, ...currentState.templates],
+      activeTemplateId: nextTemplate.id
+    };
+    appStateRef.current = nextState;
+    setAppState(nextState);
+    setEditingPageId(null);
+    setSelectedLayerIds(nextTemplate.layers[0] ? [nextTemplate.layers[0].id] : []);
+    setZoomLevel(1);
+  }
+
+  function deletePage(templateId: string) {
+    if (appState.templates.length <= 1) return;
+    const currentIndex = appState.templates.findIndex((item) => item.id === templateId);
+    const remaining = appState.templates.filter((item) => item.id !== templateId);
+    const fallbackTemplate =
+      remaining[Math.min(Math.max(currentIndex, 0), remaining.length - 1)] || remaining[0];
+
+    setAppState((current) => ({
+      ...current,
+      templates: current.templates.filter((item) => item.id !== templateId),
+      activeTemplateId:
+        current.activeTemplateId === templateId ? fallbackTemplate.id : current.activeTemplateId
+    }));
+
+    if (appState.activeTemplateId === templateId) {
+      setSelectedLayerIds(fallbackTemplate.layers[0] ? [fallbackTemplate.layers[0].id] : []);
+      setZoomLevel(1);
+    }
+    if (editingPageId === templateId) {
+      setEditingPageId(null);
+    }
+    if (pagePendingDeleteId === templateId) {
+      setPagePendingDeleteId(null);
+    }
+  }
+
+  function confirmPendingPageDelete() {
+    if (!pagePendingDelete) return;
+    deletePage(pagePendingDelete.id);
+  }
+
+  function finishEditingPage(templateId: string, name: string) {
+    if (!name.trim()) renameTemplate(templateId, "Page");
+    setEditingPageId(null);
   }
 
   function renameTemplate(templateId: string, name: string) {
@@ -1080,6 +1876,7 @@ export default function App() {
 
   function beginCanvasSelection(event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
     if (!isAdmin) return;
+    if ("button" in event.evt && event.evt.button === 1) return;
     const isStageOrBackground =
       event.target === event.target.getStage() || event.target.name() === "background";
     if (!isStageOrBackground) return;
@@ -1146,6 +1943,7 @@ export default function App() {
     layerId: string,
     event: Konva.KonvaEventObject<MouseEvent | TouchEvent>
   ) {
+    if ("button" in event.evt && event.evt.button === 1) return;
     const nativeEvent = event.evt as MouseEvent;
     if ("shiftKey" in nativeEvent && (nativeEvent.shiftKey || nativeEvent.ctrlKey || nativeEvent.metaKey)) {
       setSelectedLayerIds((current) =>
@@ -1234,6 +2032,38 @@ export default function App() {
     }));
   }
 
+  function normalizeLayerResizeNode(node: Konva.Text) {
+    const nextWidth = Math.max(80, node.width() * node.scaleX());
+    node.width(nextWidth);
+    node.scaleX(1);
+    node.scaleY(1);
+    node.getLayer()?.batchDraw();
+    transformerRef.current?.forceUpdate();
+  }
+
+  function handleLayerTransform(event: Konva.KonvaEventObject<Event>) {
+    normalizeLayerResizeNode(event.target as Konva.Text);
+  }
+
+  function handleLayerTransformEnd(layerId: string, event: Konva.KonvaEventObject<Event>) {
+    const node = event.target as Konva.Text;
+    normalizeLayerResizeNode(node);
+    updateTemplate((current) => ({
+      ...current,
+      updatedAt: new Date().toISOString(),
+      layers: current.layers.map((item) =>
+        item.id === layerId
+          ? {
+              ...item,
+              x: Math.round(node.x()),
+              y: Math.round(node.y()),
+              width: Math.round(node.width())
+            }
+          : item
+      )
+    }));
+  }
+
   function changeZoom(delta: number) {
     setZoomLevel((current) =>
       Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number((current + delta).toFixed(2))))
@@ -1243,14 +2073,57 @@ export default function App() {
   function handleCanvasWheel(event: React.WheelEvent<HTMLDivElement>) {
     if (!isZoomShortcutPressedRef.current) return;
     event.preventDefault();
+    event.stopPropagation();
+    const shell = event.currentTarget;
+    const stage = stageRef.current;
+    const stageRect = stage?.container().getBoundingClientRect();
+    if (stageRect) {
+      zoomAnchorRef.current = {
+        pointerX: event.clientX - shell.getBoundingClientRect().left,
+        pointerY: event.clientY - shell.getBoundingClientRect().top,
+        logicalX: (event.clientX - stageRect.left) / stageScale,
+        logicalY: (event.clientY - stageRect.top) / stageScale
+      };
+    }
     changeZoom(event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP);
+  }
+
+  function beginCanvasPan(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.button !== 1) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const shell = event.currentTarget;
+    canvasPanRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      scrollLeft: shell.scrollLeft,
+      scrollTop: shell.scrollTop
+    };
+    setIsCanvasPanning(true);
+    shell.setPointerCapture?.(event.pointerId);
+  }
+
+  function updateCanvasPan(event: React.PointerEvent<HTMLDivElement>) {
+    const pan = canvasPanRef.current;
+    if (!pan) return;
+    event.preventDefault();
+    const shell = event.currentTarget;
+    shell.scrollLeft = pan.scrollLeft - (event.clientX - pan.x);
+    shell.scrollTop = pan.scrollTop - (event.clientY - pan.y);
+  }
+
+  function finishCanvasPan(event?: React.PointerEvent<HTMLDivElement>) {
+    if (!canvasPanRef.current) return;
+    event?.currentTarget.releasePointerCapture?.(event.pointerId);
+    canvasPanRef.current = null;
+    setIsCanvasPanning(false);
   }
 
   function fitCanvasToFrame() {
     setZoomLevel(1);
   }
 
-  async function exportImage(pixelRatio: 1 | 0.5, mimeType: "image/png" | "image/jpeg") {
+  async function exportImage(pixelRatio: 1 | 0.75 | 0.5, mimeType: "image/png" | "image/jpeg") {
     const stage = stageRef.current;
     if (!stage || isExporting) return;
     setIsExporting(true);
@@ -1271,9 +2144,10 @@ export default function App() {
         quality: mimeType === "image/jpeg" ? 0.92 : undefined
       });
       const ext = mimeType === "image/jpeg" ? "jpg" : "png";
+      const sizeLabel = pixelRatio === 1 ? "full" : `${String(pixelRatio).replace(".", "_")}x`;
       downloadDataUrl(
         dataUrl,
-        `${getExportName(template, selectedRow, dataset.keyColumn)}_${pixelRatio === 1 ? "full" : "half"}.${ext}`
+        `${getExportName(template, selectedRow, dataset.keyColumn)}_${sizeLabel}.${ext}`
       );
     } finally {
       stage.scale({ x: currentScale, y: currentScale });
@@ -1303,23 +2177,94 @@ export default function App() {
           </div>
         </div>
 
-        <div className="side-section">
-          <div className="side-section-title">Không gian</div>
-          <button className="side-tab on" type="button">
-            <WandSparkles size={20} />
-            Studio căn
-          </button>
+        <div className="side-section page-section">
+          <div className="page-section-head">
+            <div className="side-section-title">Trang</div>
+            <button
+              type="button"
+              className="page-add-btn"
+              title="Thêm trang"
+              aria-label="Thêm trang"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                addPage();
+              }}
+            >
+              <Plus size={16} />
+            </button>
+          </div>
+          <div className="page-list">
+            {appState.templates.map((item) => (
+              <div
+                key={item.id}
+                className={
+                  item.id === appState.activeTemplateId ? "page-row active" : "page-row"
+                }
+                onClick={() => activatePage(item.id)}
+              >
+                {editingPageId === item.id ? (
+                  <input
+                    value={item.name}
+                    autoFocus
+                    onClick={(event) => event.stopPropagation()}
+                    onChange={(event) => renameTemplate(item.id, event.target.value)}
+                    onBlur={(event) => finishEditingPage(item.id, event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.currentTarget.blur();
+                      }
+                      if (event.key === "Escape") {
+                        setEditingPageId(null);
+                      }
+                    }}
+                  aria-label={`Tên page ${item.name}`}
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    className="page-name-btn"
+                    title={item.name}
+                    onDoubleClick={(event) => {
+                      event.stopPropagation();
+                      activatePage(item.id);
+                      setEditingPageId(item.id);
+                    }}
+                  >
+                    {item.name}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="page-delete-btn"
+                  title="Xóa trang"
+                  disabled={appState.templates.length <= 1}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setPagePendingDeleteId(item.id);
+                  }}
+                >
+                  <X size={15} />
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
 
         <div className="side-footer">
-          <div className={isAdmin ? "status-pill ok" : "status-pill"}>
+          <button
+            type="button"
+            className={isAdmin ? "side-link" : "status-pill"}
+            disabled={!isAdmin}
+            onClick={openAdminSettings}
+          >
             {isAdmin ? <BadgeCheck size={16} /> : <Lock size={16} />}
-            {isAdmin ? "Quản trị" : "Nhân viên"}
-          </div>
+            {isAdmin ? "Đổi mật khẩu" : "Nhân viên"}
+          </button>
           {isAdmin ? (
             <button className="side-link" type="button" onClick={logoutAdmin}>
               <LogOut size={18} />
-              Khóa quản trị
+              Đăng xuất
             </button>
           ) : (
             <button className="side-link" type="button" onClick={() => setShowAdminModal(true)}>
@@ -1369,27 +2314,10 @@ export default function App() {
               <Type size={18} />
               Phông chữ
             </button>
-            {isAdmin ? (
-              <button
-                className="btn mobile-admin-inline"
-                type="button"
-                onClick={logoutAdmin}
-              >
-                <LogOut size={18} />
-                Khóa quản trị
-              </button>
-            ) : (
-              <button
-                className="btn blue mobile-admin-inline"
-                type="button"
-                onClick={() => setShowAdminModal(true)}
-              >
-                <Lock size={18} />
-                Mở quản trị
-              </button>
-            )}
           </div>
         </header>
+
+        {storageWarning ? <div className="storage-warning">{storageWarning}</div> : null}
 
         <section className="workspace-grid">
           <section className="left-panel panel">
@@ -1403,35 +2331,31 @@ export default function App() {
 
             <div className="form-group">
               <label>Bộ dữ liệu</label>
-              <select
+              <CustomSelect
                 value={dataset.id}
-                onChange={(event) =>
+                options={appState.datasets.map((item) => ({
+                  value: item.id,
+                  label: item.name
+                }))}
+                onChange={(nextValue) =>
                   setAppState((current) => ({
                     ...current,
-                    activeDatasetId: event.target.value
+                    activeDatasetId: nextValue
                   }))
                 }
-              >
-                {appState.datasets.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name}
-                  </option>
-                ))}
-              </select>
+              />
             </div>
 
             <div className="form-group">
               <label>Mã căn</label>
-              <select
-                value={selectedRowIndex}
-                onChange={(event) => setSelectedRowIndex(Number(event.target.value))}
-              >
-                {dataset.rows.map((row, index) => (
-                  <option key={`${row[dataset.keyColumn]}_${index}`} value={index}>
-                    {row[dataset.keyColumn] || `Dòng ${index + 1}`}
-                  </option>
-                ))}
-              </select>
+              <CustomSelect
+                value={String(selectedRowIndex)}
+                options={dataset.rows.map((row, index) => ({
+                  value: String(index),
+                  label: row[dataset.keyColumn] || `Dòng ${index + 1}`
+                }))}
+                onChange={(nextValue) => setSelectedRowIndex(Number(nextValue))}
+              />
             </div>
 
             <div className="search-control">
@@ -1530,8 +2454,17 @@ export default function App() {
             </div>
 
             <div
-              className="canvas-shell"
+              ref={canvasShellRef}
+              className={isCanvasPanning ? "canvas-shell panning" : "canvas-shell"}
               onWheel={handleCanvasWheel}
+              onPointerDown={beginCanvasPan}
+              onPointerMove={updateCanvasPan}
+              onPointerUp={finishCanvasPan}
+              onPointerCancel={finishCanvasPan}
+              onPointerLeave={finishCanvasPan}
+              onAuxClick={(event) => {
+                if (event.button === 1) event.preventDefault();
+              }}
               onDragOver={(event) => event.preventDefault()}
               onDrop={handleColumnDrop}
             >
@@ -1571,16 +2504,7 @@ export default function App() {
                         height={template.height}
                         crop={backgroundCrop}
                       />
-                    ) : (
-                      <Rect
-                        name="background"
-                        x={0}
-                        y={0}
-                        width={template.width}
-                        height={template.height}
-                        fill="#f5f7fb"
-                      />
-                    )}
+                    ) : null}
 
                     {template.layers.map((layer) => (
                       <KonvaText
@@ -1605,20 +2529,8 @@ export default function App() {
                         onDragStart={(event) => handleLayerDragStart(layer.id, event)}
                         onDragMove={(event) => handleLayerDragMove(layer.id, event)}
                         onDragEnd={(event) => handleLayerDragEnd(layer.id, event)}
-                        onTransformEnd={(event) => {
-                          const node = event.target;
-                          const nextWidth = Math.max(80, node.width() * node.scaleX());
-                          node.scaleX(1);
-                          updateTemplate((current) => ({
-                            ...current,
-                            updatedAt: new Date().toISOString(),
-                            layers: current.layers.map((item) =>
-                              item.id === layer.id
-                                ? { ...item, width: Math.round(nextWidth) }
-                                : item
-                            )
-                          }));
-                        }}
+                        onTransform={handleLayerTransform}
+                        onTransformEnd={(event) => handleLayerTransformEnd(layer.id, event)}
                       />
                     ))}
                     {selectionBox.visible ? (
@@ -1666,48 +2578,135 @@ export default function App() {
 
             {selectedLayer ? (
               <div className="property-stack">
+                {hasMultiSelection ? (
+                  <div className="alignment-tools">
+                    <div className="section-label">Alignment</div>
+                    <div className="alignment-row" aria-label="Căn ngang">
+                      <button
+                        type="button"
+                        className="align-btn"
+                        title="Căn trái"
+                        disabled={!isAdmin}
+                        onClick={() => alignSelectedLayers("horizontal", "start")}
+                      >
+                        <AlignHorizontalJustifyStart size={18} />
+                      </button>
+                      <button
+                        type="button"
+                        className="align-btn"
+                        title="Căn giữa ngang"
+                        disabled={!isAdmin}
+                        onClick={() => alignSelectedLayers("horizontal", "center")}
+                      >
+                        <AlignHorizontalJustifyCenter size={18} />
+                      </button>
+                      <button
+                        type="button"
+                        className="align-btn"
+                        title="Căn phải"
+                        disabled={!isAdmin}
+                        onClick={() => alignSelectedLayers("horizontal", "end")}
+                      >
+                        <AlignHorizontalJustifyEnd size={18} />
+                      </button>
+                    </div>
+                    <div className="alignment-row" aria-label="Căn dọc">
+                      <button
+                        type="button"
+                        className="align-btn"
+                        title="Căn trên"
+                        disabled={!isAdmin}
+                        onClick={() => alignSelectedLayers("vertical", "start")}
+                      >
+                        <AlignVerticalJustifyStart size={18} />
+                      </button>
+                      <button
+                        type="button"
+                        className="align-btn"
+                        title="Căn giữa dọc"
+                        disabled={!isAdmin}
+                        onClick={() => alignSelectedLayers("vertical", "center")}
+                      >
+                        <AlignVerticalJustifyCenter size={18} />
+                      </button>
+                      <button
+                        type="button"
+                        className="align-btn"
+                        title="Căn dưới"
+                        disabled={!isAdmin}
+                        onClick={() => alignSelectedLayers("vertical", "end")}
+                      >
+                        <AlignVerticalJustifyEnd size={18} />
+                      </button>
+                    </div>
+                    <div className="alignment-actions">
+                      <button
+                        type="button"
+                        className="align-action"
+                        disabled={!isAdmin}
+                        onClick={tidySelectedLayers}
+                      >
+                        <Rows3 size={17} />
+                        Dọn đều
+                      </button>
+                      <button
+                        type="button"
+                        className="align-action"
+                        disabled={!isAdmin || selectedLayers.length < 3}
+                        onClick={() => distributeSelectedLayers("vertical")}
+                      >
+                        <Rows3 size={17} />
+                        Dàn đều dọc
+                      </button>
+                      <button
+                        type="button"
+                        className="align-action"
+                        disabled={!isAdmin || selectedLayers.length < 3}
+                        onClick={() => distributeSelectedLayers("horizontal")}
+                      >
+                        <Columns3 size={17} />
+                        Dàn đều ngang
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
                 <div className="form-group">
                   <label>Gắn cột</label>
-                  <select
+                  <CustomSelect
                     value={selectedLayer.column}
                     disabled={!isAdmin || hasMultiSelection}
-                    onChange={(event) =>
+                    options={dataset.columns.map((column) => ({
+                      value: column,
+                      label: column
+                    }))}
+                    onChange={(nextValue) =>
                       updateSelectedLayer({
-                        column: event.target.value,
-                        name: event.target.value
+                        column: nextValue,
+                        name: nextValue
                       })
                     }
-                  >
-                    {dataset.columns.map((column) => (
-                      <option key={column} value={column}>
-                        {column}
-                      </option>
-                    ))}
-                  </select>
+                  />
                 </div>
 
                 <div className="form-row">
                   <div className="form-group">
                     <label>Phông chữ</label>
-                    <select
+                    <CustomSelect
                       value={selectedLayer.fontFamily}
                       disabled={!isAdmin}
-                      onChange={(event) => updateSelectedLayer({ fontFamily: event.target.value })}
-                    >
-                      {availableFonts.map((font) => (
-                        <option key={font} value={font}>
-                          {font}
-                        </option>
-                      ))}
-                    </select>
+                      options={availableFonts.map((font) => ({
+                        value: font,
+                        label: font
+                      }))}
+                      onChange={(nextValue) => updateSelectedLayer({ fontFamily: nextValue })}
+                    />
                   </div>
                   <div className="form-group">
                     <label>Màu</label>
-                    <input
-                      type="color"
+                    <HexColorInput
                       value={selectedLayer.color}
                       disabled={!isAdmin}
-                      onChange={(event) => updateSelectedLayer({ color: event.target.value })}
+                      onChange={(nextValue) => updateSelectedLayer({ color: nextValue })}
                     />
                   </div>
                 </div>
@@ -1728,17 +2727,15 @@ export default function App() {
                   </div>
                   <div className="form-group">
                     <label>Độ đậm</label>
-                    <select
+                    <CustomSelect
                       value={selectedLayer.fontWeight}
                       disabled={!isAdmin}
-                      onChange={(event) => updateSelectedLayer({ fontWeight: event.target.value })}
-                    >
-                      <option value="400">400</option>
-                      <option value="500">500</option>
-                      <option value="600">600</option>
-                      <option value="700">700</option>
-                      <option value="800">800</option>
-                    </select>
+                      options={["400", "500", "600", "700", "800"].map((weight) => ({
+                        value: weight,
+                        label: weight
+                      }))}
+                      onChange={(nextValue) => updateSelectedLayer({ fontWeight: nextValue })}
+                    />
                   </div>
                 </div>
 
@@ -1831,7 +2828,49 @@ export default function App() {
 
             <div className="export-panel">
               <div className="section-label">Xuất ảnh</div>
-              <div className="export-grid">
+              <div className="export-controls">
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Loại file</label>
+                    <CustomSelect
+                      value={exportMimeType}
+                      options={[
+                        { value: "image/png", label: "PNG" },
+                        { value: "image/jpeg", label: "JPG" }
+                      ]}
+                      onChange={(nextValue) =>
+                        setExportMimeType(nextValue as "image/png" | "image/jpeg")
+                      }
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Kích thước</label>
+                    <CustomSelect
+                      value={exportScale}
+                      options={[
+                        { value: "1", label: "Gốc" },
+                        { value: "0.75", label: "0.75x" },
+                        { value: "0.5", label: "0.5x" }
+                      ]}
+                      onChange={(nextValue) =>
+                        setExportScale(nextValue as "1" | "0.5" | "0.75")
+                      }
+                    />
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn blue full"
+                  disabled={isExporting}
+                  onClick={() =>
+                    exportImage(Number(exportScale) as 1 | 0.75 | 0.5, exportMimeType)
+                  }
+                >
+                  <Download size={18} />
+                  Tải xuống
+                </button>
+              </div>
+              <div className="export-grid legacy-export-grid">
                 <button
                   type="button"
                   className="btn blue"
@@ -1845,10 +2884,10 @@ export default function App() {
                   type="button"
                   className="btn"
                   disabled={isExporting}
-                  onClick={() => exportImage(0.5, "image/png")}
+                  onClick={() => exportImage(0.75, "image/png")}
                 >
                   <Download size={18} />
-                  PNG 1/2
+                  PNG 0.75x
                 </button>
                 <button
                   type="button"
@@ -1866,7 +2905,7 @@ export default function App() {
                   onClick={() => exportImage(0.5, "image/jpeg")}
                 >
                   <Download size={18} />
-                  JPG 1/2
+                  JPG 0.5x
                 </button>
               </div>
             </div>
@@ -1875,31 +2914,57 @@ export default function App() {
               <div className="section-label">Quản trị</div>
               <div className="form-group">
                 <label>Cột khóa</label>
-                <select
+                <CustomSelect
                   value={dataset.keyColumn}
                   disabled={!isAdmin}
-                  onChange={(event) => setKeyColumn(event.target.value)}
-                >
-                  {dataset.columns.map((column) => (
-                    <option key={column} value={column}>
-                      {column}
-                    </option>
-                  ))}
-                </select>
+                  options={dataset.columns.map((column) => ({
+                    value: column,
+                    label: column
+                  }))}
+                  onChange={(nextValue) => setKeyColumn(nextValue)}
+                />
               </div>
-              <button
-                type="button"
-                className="btn full"
-                disabled={!isAdmin}
-                onClick={resetLocalData}
-              >
-                <RefreshCw size={18} />
-                Khôi phục mẫu
-              </button>
             </div>
           </aside>
         </section>
       </main>
+
+      {pagePendingDelete ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="admin-modal confirm-modal">
+            <div className="modal-head">
+              <div className="modal-icon danger-icon">
+                <X size={22} />
+              </div>
+              <button
+                type="button"
+                className="icon-btn"
+                title="Đóng"
+                onClick={() => setPagePendingDeleteId(null)}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <h2>Xóa trang?</h2>
+            <p className="confirm-copy">
+              Trang <strong>{pagePendingDelete.name}</strong> sẽ bị xóa vĩnh viễn và không thể
+              khôi phục lại được.
+            </p>
+            <div className="confirm-actions">
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setPagePendingDeleteId(null)}
+              >
+                Hủy
+              </button>
+              <button type="button" className="btn danger" onClick={confirmPendingPageDelete}>
+                Xóa trang
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {showAdminModal ? (
         <div className="modal-backdrop" role="dialog" aria-modal="true">
@@ -1919,10 +2984,18 @@ export default function App() {
             </div>
             <h2>Mở quản trị</h2>
             <div className="form-group">
-              <label htmlFor="admin-code-input">Mã quản trị</label>
+              <label htmlFor="admin-account-input">Tài khoản</label>
+              <input
+                id="admin-account-input"
+                autoFocus
+                value={adminLoginName}
+                onChange={(event) => setAdminLoginName(event.target.value)}
+              />
+            </div>
+            <div className="form-group">
+              <label htmlFor="admin-code-input">Mật khẩu</label>
               <input
                 id="admin-code-input"
-                autoFocus
                 type="password"
                 value={adminCode}
                 onChange={(event) => setAdminCode(event.target.value)}
@@ -1932,6 +3005,63 @@ export default function App() {
             <button type="submit" className="btn blue full">
               <Save size={18} />
               Mở khóa
+            </button>
+          </form>
+        </div>
+      ) : null}
+
+      {showAdminSettingsModal ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <form className="admin-modal" onSubmit={saveAdminSettings}>
+            <div className="modal-head">
+              <div className="modal-icon">
+                <BadgeCheck size={22} />
+              </div>
+              <button
+                type="button"
+                className="icon-btn"
+                title="Đóng"
+                onClick={() => setShowAdminSettingsModal(false)}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <h2>Tài khoản quản trị</h2>
+            <div className="form-group">
+              <label htmlFor="admin-settings-name">Tên tài khoản</label>
+              <input
+                id="admin-settings-name"
+                autoFocus
+                value={adminSettingsName}
+                onChange={(event) => setAdminSettingsName(event.target.value)}
+              />
+            </div>
+            <div className="form-group">
+              <label htmlFor="admin-new-password">Mật khẩu mới</label>
+              <input
+                id="admin-new-password"
+                type="password"
+                value={adminNewPassword}
+                onChange={(event) => setAdminNewPassword(event.target.value)}
+                placeholder="Để trống nếu không đổi"
+              />
+            </div>
+            <div className="form-group">
+              <label htmlFor="admin-confirm-password">Xác nhận mật khẩu</label>
+              <input
+                id="admin-confirm-password"
+                type="password"
+                value={adminConfirmPassword}
+                onChange={(event) => setAdminConfirmPassword(event.target.value)}
+              />
+            </div>
+            {adminSettingsError ? <div className="form-error">{adminSettingsError}</div> : null}
+            {adminSettingsMessage ? (
+              <div className="form-success">{adminSettingsMessage}</div>
+            ) : null}
+            <button type="submit" className="btn blue full">
+              <Save size={18} />
+              Lưu thay đổi
             </button>
           </form>
         </div>
@@ -2116,20 +3246,18 @@ export default function App() {
 
                 <div className="form-group">
                   <label>Cột khóa mã căn</label>
-                  <select
+                  <CustomSelect
                     value={pendingDataset.keyColumn}
-                    onChange={(event) =>
+                    options={pendingDataset.columns.map((column) => ({
+                      value: column,
+                      label: column
+                    }))}
+                    onChange={(nextValue) =>
                       setPendingDataset((current) =>
-                        current ? { ...current, keyColumn: event.target.value } : current
+                        current ? { ...current, keyColumn: nextValue } : current
                       )
                     }
-                  >
-                    {pendingDataset.columns.map((column) => (
-                      <option key={column} value={column}>
-                        {column}
-                      </option>
-                    ))}
-                  </select>
+                  />
                 </div>
 
                 <div className="column-review">
@@ -2194,7 +3322,7 @@ export default function App() {
             <h2>Quản lý ảnh mẫu</h2>
 
             <div className="template-library-actions">
-              <label className="btn">
+              <label className="btn blue">
                 <ImageUp size={18} />
                 Tải ảnh mới
                 <input
@@ -2273,14 +3401,29 @@ export default function App() {
                       checked={selectedTemplateIds.includes(item.id)}
                       onChange={() => toggleTemplateSelection(item.id)}
                     />
-                    <img src={item.backgroundDataUrl} alt={item.name} />
+                    {item.backgroundDataUrl ? (
+                      <img src={item.backgroundDataUrl} alt={item.name} />
+                    ) : (
+                      <div className="blank-image-placeholder" aria-label={`${item.name} chưa có ảnh`} />
+                    )}
                     <button
                       type="button"
-                      className="btn blue import-template-btn"
-                      onClick={() => importTemplateToEditor(item.id)}
+                      className="icon-btn preview-template-btn"
+                      title="Preview"
+                      aria-label={`Preview ${item.name}`}
+                      onClick={() => setPreviewTemplate(item)}
                     >
-                      Import
+                      <Eye size={17} />
                     </button>
+                    <div className="template-thumb-actions">
+                      <button
+                        type="button"
+                        className="btn blue import-template-btn"
+                        onClick={() => importTemplateToEditor(item.id)}
+                      >
+                        Thêm
+                      </button>
+                    </div>
                   </div>
                   <input
                     className="template-name-input"
@@ -2301,6 +3444,52 @@ export default function App() {
             {templateLibraryError ? (
               <div className="form-error">{templateLibraryError}</div>
             ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {previewTemplate ? (
+        <div className="modal-backdrop preview-backdrop" role="dialog" aria-modal="true">
+          <div className="admin-modal template-preview-modal">
+            <div className="modal-head">
+              <div>
+                <h2>{previewTemplate.name}</h2>
+                <p className="template-preview-meta">
+                  {previewTemplate.width} x {previewTemplate.height}px
+                </p>
+              </div>
+              <button
+                type="button"
+                className="icon-btn"
+                title="Đóng"
+                onClick={() => setPreviewTemplate(null)}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="template-preview-frame">
+              {previewTemplate.backgroundDataUrl ? (
+                <img src={previewTemplate.backgroundDataUrl} alt={previewTemplate.name} />
+              ) : (
+                <div className="blank-preview-placeholder">Chưa có ảnh</div>
+              )}
+            </div>
+            <div className="template-preview-actions">
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setPreviewTemplate(null)}
+              >
+                Đóng
+              </button>
+              <button
+                type="button"
+                className="btn blue"
+                onClick={() => importTemplateToEditor(previewTemplate.id)}
+              >
+                Thêm
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
