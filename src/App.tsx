@@ -428,6 +428,7 @@ function CustomSelect({
 }
 
 const STORAGE_KEY = "oh-property-maker-state-v2";
+const WORKSPACE_SESSION_KEY = "oh-property-maker-workspace-session-v1";
 const ADMIN_KEY = "oh-property-maker-admin-ok";
 const ADMIN_LAST_ACTIVITY_KEY = "oh-property-maker-admin-last-activity";
 const ADMIN_ACCOUNT_KEY = "oh-property-maker-admin-account";
@@ -1053,25 +1054,84 @@ function normalizeAppState(parsed: Partial<AppState> | null | undefined): AppSta
   };
 }
 
+function persistedLibraryState(appState: AppState): AppState {
+  const initialState = createInitialState();
+  return {
+    ...initialState,
+    templateFolders: appState.templateFolders,
+    templateImages: appState.templateImages,
+    datasets: appState.datasets,
+    customFonts: appState.customFonts
+  };
+}
+
+function mergePersistedLibraries(workspaceState: AppState, persistedState: AppState): AppState {
+  return {
+    ...workspaceState,
+    templateFolders: persistedState.templateFolders,
+    templateImages: persistedState.templateImages,
+    datasets: persistedState.datasets,
+    customFonts: persistedState.customFonts,
+    activeDatasetId: persistedState.datasets.some((dataset) => dataset.id === workspaceState.activeDatasetId)
+      ? workspaceState.activeDatasetId
+      : ""
+  };
+}
+
 function appStateForLocalBackup(appState: AppState) {
+  const libraryState = persistedLibraryState(appState);
+  return {
+    ...libraryState,
+    templateImages: libraryState.templateImages.filter((image) => !image.dataUrl.startsWith("data:")),
+    customFonts: libraryState.customFonts.filter((font) => !font.dataUrl.startsWith("data:"))
+  };
+}
+
+function workspaceStateForSession(appState: AppState) {
+  return {
+    templates: appState.templates,
+    activeTemplateId: appState.activeTemplateId,
+    activeDatasetId: appState.activeDatasetId
+  };
+}
+
+function mergeSessionWorkspace(appState: AppState, workspace: Partial<AppState> | null | undefined) {
+  if (!workspace || !Array.isArray(workspace.templates) || !workspace.templates.length) {
+    return appState;
+  }
+  const templates = workspace.templates.map((template, index) => normalizeTemplate(template, index));
+  const activeTemplateId = templates.some((template) => template.id === workspace.activeTemplateId)
+    ? workspace.activeTemplateId || templates[0].id
+    : templates[0].id;
+  const activeDatasetId = appState.datasets.some((dataset) => dataset.id === workspace.activeDatasetId)
+    ? workspace.activeDatasetId || ""
+    : "";
   return {
     ...appState,
-    templateImages: appState.templateImages.filter((image) => !image.dataUrl.startsWith("data:")),
-    templates: appState.templates.map((template) => ({
-      ...template,
-      backgroundDataUrl: template.backgroundDataUrl.startsWith("data:")
-        ? ""
-        : template.backgroundDataUrl
-    })),
-    customFonts: appState.customFonts.filter((font) => !font.dataUrl.startsWith("data:"))
+    templates,
+    activeTemplateId,
+    activeDatasetId
   };
 }
 
 function loadState() {
   try {
+    let nextState = createInitialState();
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (!saved) return createInitialState();
-    return normalizeAppState(JSON.parse(saved) as AppState);
+    if (saved) {
+      nextState = mergePersistedLibraries(
+        nextState,
+        normalizeAppState(JSON.parse(saved) as AppState)
+      );
+    }
+    const sessionWorkspace = sessionStorage.getItem(WORKSPACE_SESSION_KEY);
+    if (sessionWorkspace) {
+      nextState = mergeSessionWorkspace(
+        nextState,
+        JSON.parse(sessionWorkspace) as Partial<AppState>
+      );
+    }
+    return nextState;
   } catch {
     return createInitialState();
   }
@@ -1436,7 +1496,8 @@ export default function App() {
   const availableFonts = Array.from(
     new Set([...BASE_FONTS, ...appState.customFonts.map((font) => font.family)])
   );
-  const canAddTextLayer = isAdmin;
+  const canEditWorkspace = true;
+  const canAddTextLayer = canEditWorkspace;
   const uploadedFontGroups = useMemo(() => {
     const groups = new Map<
       string,
@@ -1495,8 +1556,11 @@ export default function App() {
         if (remoteState) {
           const normalized = normalizeAppState(remoteState);
           skipNextRemoteSaveRef.current = true;
-          appStateRef.current = normalized;
-          setAppStateBase(normalized);
+          setAppStateBase((current) => {
+            const nextState = mergePersistedLibraries(current, normalized);
+            appStateRef.current = nextState;
+            return nextState;
+          });
         }
         setCloudSync({
           status: "saved",
@@ -1545,8 +1609,7 @@ export default function App() {
   useEffect(() => {
     const saveTimer = window.setTimeout(() => {
       try {
-        const localState = remoteSyncEnabledRef.current ? appStateForLocalBackup(appState) : appState;
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(localState));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(appStateForLocalBackup(appState)));
         setStorageWarning("");
       } catch {
         if (remoteSyncEnabledRef.current) {
@@ -1561,6 +1624,14 @@ export default function App() {
 
     return () => window.clearTimeout(saveTimer);
   }, [appState]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(WORKSPACE_SESSION_KEY, JSON.stringify(workspaceStateForSession(appState)));
+    } catch {
+      // Workspace is still available in memory for the current render session.
+    }
+  }, [appState.templates, appState.activeTemplateId, appState.activeDatasetId]);
 
   useEffect(() => {
     if (!remoteSyncEnabledRef.current || !remoteStateReadyRef.current || !isAdmin) return;
@@ -1581,7 +1652,7 @@ export default function App() {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ state: appState })
+          body: JSON.stringify({ state: persistedLibraryState(appState) })
         });
         const data = await readJsonResponse(response);
         if (!response.ok) {
@@ -1604,7 +1675,13 @@ export default function App() {
     }, 900);
 
     return () => window.clearTimeout(saveTimer);
-  }, [appState, isAdmin]);
+  }, [
+    appState.templateFolders,
+    appState.templateImages,
+    appState.datasets,
+    appState.customFonts,
+    isAdmin
+  ]);
 
 
   useEffect(() => {
@@ -1819,7 +1896,7 @@ export default function App() {
         ArrowDown: { x: 0, y: 1 }
       };
       const move = arrowMoves[event.key];
-      if (!move || !isAdminRef.current || !selectedIds.length) {
+      if (!move || !selectedIds.length) {
         return;
       }
 
@@ -1891,7 +1968,7 @@ export default function App() {
     layer: TextLayer,
     event: Konva.KonvaEventObject<MouseEvent | TouchEvent>
   ) {
-    if (!isAdmin || typeof layer.content !== "string") return;
+    if (!canEditWorkspace || typeof layer.content !== "string") return;
     event.cancelBubble = true;
     setActiveCanvasTool("move");
     setSelectedLayerIds([layer.id]);
@@ -1978,7 +2055,7 @@ export default function App() {
     axis: "horizontal" | "vertical",
     placement: "start" | "center" | "end"
   ) {
-    if (!isAdmin || selectedLayers.length < 2) return;
+    if (!canEditWorkspace || selectedLayers.length < 2) return;
     const bounds = getSelectedLayerBounds();
     const group = getBoundsUnion(bounds);
     const byId = new Map(bounds.map((item) => [item.id, item]));
@@ -2011,7 +2088,7 @@ export default function App() {
   }
 
   function distributeSelectedLayers(axis: "horizontal" | "vertical") {
-    if (!isAdmin || selectedLayers.length < 3) return;
+    if (!canEditWorkspace || selectedLayers.length < 3) return;
     const bounds = getSelectedLayerBounds();
     const group = getBoundsUnion(bounds);
     const sorted = [...bounds].sort((a, b) =>
@@ -2041,7 +2118,7 @@ export default function App() {
   }
 
   function tidySelectedLayers() {
-    if (!isAdmin || selectedLayers.length < 2) return;
+    if (!canEditWorkspace || selectedLayers.length < 2) return;
     const bounds = getSelectedLayerBounds();
     const group = getBoundsUnion(bounds);
     const mainAxis: "horizontal" | "vertical" =
@@ -2085,7 +2162,7 @@ export default function App() {
   }
 
   function addTextLayer(column: string, x = 120, y = 120) {
-    if (!column || !isAdmin) return;
+    if (!column || !canEditWorkspace) return;
     const layer: TextLayer = {
       id: uid("layer"),
       name: column,
@@ -2111,7 +2188,7 @@ export default function App() {
   }
 
   function addFreeTextLayer(x = 120, y = 120) {
-    if (!isAdmin) return;
+    if (!canEditWorkspace) return;
     const layer: TextLayer = {
       id: uid("layer"),
       name: "Free text",
@@ -2138,7 +2215,7 @@ export default function App() {
   }
 
   function removeSelectedLayer() {
-    if (!selectedLayerIds.length || !isAdmin) return;
+    if (!selectedLayerIds.length || !canEditWorkspace) return;
     updateTemplate((current) => ({
       ...current,
       updatedAt: new Date().toISOString(),
@@ -2961,7 +3038,7 @@ export default function App() {
 
   function handleColumnDrop(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
-    if (!isAdmin) return;
+    if (!canEditWorkspace) return;
     const column = event.dataTransfer.getData("text/column");
     if (!column) return;
     const rect = stageRef.current?.container().getBoundingClientRect();
@@ -2982,7 +3059,7 @@ export default function App() {
   }
 
   function beginCanvasSelection(event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
-    if (!isAdmin) return;
+    if (!canEditWorkspace) return;
     if ("button" in event.evt && event.evt.button === 1) return;
     const isStageOrBackground =
       event.target === event.target.getStage() || event.target.name() === "background";
@@ -3584,12 +3661,12 @@ export default function App() {
                         type="button"
                         key={column}
                         className="column-chip"
-                        draggable={isAdmin}
+                        draggable={canEditWorkspace}
                         onDragStart={(event) =>
                           event.dataTransfer.setData("text/column", column)
                         }
                         onClick={() => addTextLayer(column)}
-                        disabled={!isAdmin}
+                        disabled={!canEditWorkspace}
                       >
                         <Plus size={14} />
                         {column}
@@ -3731,7 +3808,7 @@ export default function App() {
                         align={layer.align}
                         lineHeight={layer.lineHeight}
                         letterSpacing={layer.letterSpacing}
-                        draggable={isAdmin && activeCanvasTool === "move"}
+                        draggable={canEditWorkspace && activeCanvasTool === "move"}
                         visible={inlineTextEditor?.layerId !== layer.id}
                         onMouseDown={(event) => selectLayerFromCanvas(layer.id, event)}
                         onTap={(event) => selectLayerFromCanvas(layer.id, event)}
@@ -3899,7 +3976,7 @@ export default function App() {
                         type="button"
                         className="align-btn"
                         title="Căn trái"
-                        disabled={!isAdmin}
+                        disabled={!canEditWorkspace}
                         onClick={() => alignSelectedLayers("horizontal", "start")}
                       >
                         <AlignHorizontalJustifyStart size={18} />
@@ -3908,7 +3985,7 @@ export default function App() {
                         type="button"
                         className="align-btn"
                         title="Căn giữa ngang"
-                        disabled={!isAdmin}
+                        disabled={!canEditWorkspace}
                         onClick={() => alignSelectedLayers("horizontal", "center")}
                       >
                         <AlignHorizontalJustifyCenter size={18} />
@@ -3917,7 +3994,7 @@ export default function App() {
                         type="button"
                         className="align-btn"
                         title="Căn phải"
-                        disabled={!isAdmin}
+                        disabled={!canEditWorkspace}
                         onClick={() => alignSelectedLayers("horizontal", "end")}
                       >
                         <AlignHorizontalJustifyEnd size={18} />
@@ -3928,7 +4005,7 @@ export default function App() {
                         type="button"
                         className="align-btn"
                         title="Căn trên"
-                        disabled={!isAdmin}
+                        disabled={!canEditWorkspace}
                         onClick={() => alignSelectedLayers("vertical", "start")}
                       >
                         <AlignVerticalJustifyStart size={18} />
@@ -3937,7 +4014,7 @@ export default function App() {
                         type="button"
                         className="align-btn"
                         title="Căn giữa dọc"
-                        disabled={!isAdmin}
+                        disabled={!canEditWorkspace}
                         onClick={() => alignSelectedLayers("vertical", "center")}
                       >
                         <AlignVerticalJustifyCenter size={18} />
@@ -3946,7 +4023,7 @@ export default function App() {
                         type="button"
                         className="align-btn"
                         title="Căn dưới"
-                        disabled={!isAdmin}
+                        disabled={!canEditWorkspace}
                         onClick={() => alignSelectedLayers("vertical", "end")}
                       >
                         <AlignVerticalJustifyEnd size={18} />
@@ -3956,7 +4033,7 @@ export default function App() {
                       <button
                         type="button"
                         className="align-action"
-                        disabled={!isAdmin}
+                        disabled={!canEditWorkspace}
                         onClick={tidySelectedLayers}
                       >
                         <Rows3 size={17} />
@@ -3965,7 +4042,7 @@ export default function App() {
                       <button
                         type="button"
                         className="align-action"
-                        disabled={!isAdmin || selectedLayers.length < 3}
+                        disabled={!canEditWorkspace || selectedLayers.length < 3}
                         onClick={() => distributeSelectedLayers("vertical")}
                       >
                         <Rows3 size={17} />
@@ -3974,7 +4051,7 @@ export default function App() {
                       <button
                         type="button"
                         className="align-action"
-                        disabled={!isAdmin || selectedLayers.length < 3}
+                        disabled={!canEditWorkspace || selectedLayers.length < 3}
                         onClick={() => distributeSelectedLayers("horizontal")}
                       >
                         <Columns3 size={17} />
@@ -3989,7 +4066,7 @@ export default function App() {
                     <textarea
                       rows={3}
                       value={selectedLayer.content}
-                      disabled={!isAdmin || hasMultiSelection}
+                      disabled={!canEditWorkspace || hasMultiSelection}
                       onChange={(event) =>
                         updateSelectedLayer({
                           content: event.target.value,
@@ -4003,7 +4080,7 @@ export default function App() {
                     <label>Gắn cột</label>
                     <CustomSelect
                       value={selectedLayer.column}
-                      disabled={!isAdmin || hasMultiSelection}
+                      disabled={!canEditWorkspace || hasMultiSelection}
                       options={dataset.columns.map((column) => ({
                         value: column,
                         label: column
@@ -4022,7 +4099,7 @@ export default function App() {
                   <label>Tên font</label>
                   <CustomSelect
                     value={selectedLayer.fontFamily}
-                    disabled={!isAdmin}
+                    disabled={!canEditWorkspace}
                     options={availableFonts.map((font) => ({
                       value: font,
                       label: font
@@ -4036,7 +4113,7 @@ export default function App() {
                     <label>Font type</label>
                     <CustomSelect
                       value={`${selectedLayer.fontWeight}|${selectedLayer.fontStyle || "normal"}`}
-                      disabled={!isAdmin}
+                      disabled={!canEditWorkspace}
                       options={selectedFontStyleOptions}
                       onChange={(nextValue) => {
                         const [fontWeight, fontStyle] = nextValue.split("|");
@@ -4054,7 +4131,7 @@ export default function App() {
                       min={8}
                       max={220}
                       value={selectedLayer.fontSize}
-                      disabled={!isAdmin}
+                      disabled={!canEditWorkspace}
                       onChange={(event) =>
                         updateSelectedLayer({ fontSize: Number(event.target.value) })
                       }
@@ -4066,7 +4143,7 @@ export default function App() {
                   <label>Màu sắc</label>
                   <HexColorInput
                     value={selectedLayer.color}
-                    disabled={!isAdmin}
+                    disabled={!canEditWorkspace}
                     onChange={(nextValue) => updateSelectedLayer({ color: nextValue })}
                   />
                 </div>
@@ -4078,7 +4155,7 @@ export default function App() {
                       type="number"
                       min={80}
                       value={Math.round(selectedLayer.width)}
-                      disabled={!isAdmin}
+                      disabled={!canEditWorkspace}
                       onChange={(event) =>
                         updateSelectedLayer({ width: Number(event.target.value) })
                       }
@@ -4092,7 +4169,7 @@ export default function App() {
                       min={0.8}
                       max={2}
                       value={selectedLayer.lineHeight}
-                      disabled={!isAdmin}
+                      disabled={!canEditWorkspace}
                       onChange={(event) =>
                         updateSelectedLayer({ lineHeight: Number(event.target.value) })
                       }
@@ -4108,7 +4185,7 @@ export default function App() {
                         type="button"
                         key={align}
                         className={selectedLayer.align === align ? "on" : ""}
-                        disabled={!isAdmin}
+                        disabled={!canEditWorkspace}
                         onClick={() => updateSelectedLayer({ align })}
                       >
                         {align === "left" ? (
@@ -4132,7 +4209,7 @@ export default function App() {
                         type="button"
                         key={mode}
                         className={selectedLayer.textTransform === mode ? "on" : ""}
-                        disabled={!isAdmin}
+                        disabled={!canEditWorkspace}
                         onClick={() => updateSelectedLayer({ textTransform: mode })}
                       >
                         {mode === "none" ? "Gốc" : mode === "uppercase" ? "ABC" : "abc"}
@@ -4144,7 +4221,7 @@ export default function App() {
                 <button
                   type="button"
                   className="btn danger full"
-                  disabled={!isAdmin}
+                  disabled={!canEditWorkspace}
                   onClick={removeSelectedLayer}
                 >
                   <X size={18} />
