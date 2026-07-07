@@ -1053,6 +1053,20 @@ function normalizeAppState(parsed: Partial<AppState> | null | undefined): AppSta
   };
 }
 
+function appStateForLocalBackup(appState: AppState) {
+  return {
+    ...appState,
+    templateImages: appState.templateImages.filter((image) => !image.dataUrl.startsWith("data:")),
+    templates: appState.templates.map((template) => ({
+      ...template,
+      backgroundDataUrl: template.backgroundDataUrl.startsWith("data:")
+        ? ""
+        : template.backgroundDataUrl
+    })),
+    customFonts: appState.customFonts.filter((font) => !font.dataUrl.startsWith("data:"))
+  };
+}
+
 function loadState() {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -1531,9 +1545,14 @@ export default function App() {
   useEffect(() => {
     const saveTimer = window.setTimeout(() => {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
+        const localState = remoteSyncEnabledRef.current ? appStateForLocalBackup(appState) : appState;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(localState));
         setStorageWarning("");
       } catch {
+        if (remoteSyncEnabledRef.current) {
+          setStorageWarning("");
+          return;
+        }
         setStorageWarning(
           "Không lưu được dữ liệu vào trình duyệt vì dung lượng ảnh quá lớn. Trang mới vẫn dùng được trong phiên hiện tại."
         );
