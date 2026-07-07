@@ -9,6 +9,7 @@
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
     "konva": "latest",
     "lucide-react": "latest",
     "papaparse": "^5.5.4",
@@ -21,6 +22,7 @@
     "@types/papaparse": "^5.5.2",
     "@types/react": "latest",
     "@types/react-dom": "latest",
+    "@vercel/node": "^5.8.22",
     "@vitejs/plugin-react": "latest",
     "playwright": "^1.61.1",
     "typescript": "latest",

@@ -21,29 +21,55 @@ import {
   BadgeCheck,
   Check,
   ChevronDown,
+  ChevronRight,
   Columns3,
   Download,
   Eye,
   FileSpreadsheet,
+  Folder,
+  FolderPlus,
+  Hand,
   ImageUp,
   Lock,
   LogOut,
   Maximize2,
+  MoreHorizontal,
+  MousePointer2,
   Pipette,
   Plus,
   Rows3,
   Save,
   Search,
+  Settings,
   SlidersHorizontal,
-  Sparkles,
   TextCursorInput,
+  Trash2,
   Type,
+  Redo2,
+  Undo2,
   X,
   ZoomIn,
   ZoomOut
 } from "lucide-react";
 
 type RowData = Record<string, string>;
+
+type CanvasTool = "move" | "hand" | "text";
+
+type InlineTextEditor = {
+  layerId: string;
+  value: string;
+};
+
+type AppStateUpdater = AppState | ((current: AppState) => AppState);
+
+type CloudSyncState = {
+  status: "loading" | "local" | "ready" | "saving" | "saved" | "error";
+  message: string;
+};
+
+type CloudinaryResourceType = "image" | "raw" | "auto";
+type DatasetSourceKind = "upload" | "google-sheet";
 
 type Dataset = {
   id: string;
@@ -52,20 +78,29 @@ type Dataset = {
   rows: RowData[];
   keyColumn: string;
   importedAt: string;
+  sourceKind?: DatasetSourceKind;
+  sourceName?: string;
+  sourceUrl?: string;
+  sourceMimeType?: string;
+  sourceSize?: number;
 };
 
-type PendingDataset = Omit<Dataset, "id" | "importedAt">;
+type PendingDataset = Omit<Dataset, "id" | "importedAt"> & {
+  sourceFile?: File;
+};
 
 type TextLayer = {
   id: string;
   name: string;
   column: string;
+  content?: string;
   x: number;
   y: number;
   width: number;
   fontFamily: string;
   fontSize: number;
   fontWeight: string;
+  fontStyle?: "normal" | "italic";
   color: string;
   align: "left" | "center" | "right";
   lineHeight: number;
@@ -84,6 +119,7 @@ type LayerBounds = {
 type Template = {
   id: string;
   name: string;
+  folderId: string;
   width: number;
   height: number;
   backgroundDataUrl: string;
@@ -91,14 +127,35 @@ type Template = {
   updatedAt: string;
 };
 
+type TemplateImage = {
+  id: string;
+  name: string;
+  folderId: string;
+  width: number;
+  height: number;
+  dataUrl: string;
+  createdAt: string;
+};
+
+type TemplateFolder = {
+  id: string;
+  name: string;
+  parentId: string | null;
+  createdAt: string;
+};
+
 type CustomFont = {
   family: string;
   dataUrl: string;
   fileName?: string;
   styleName?: string;
+  fontWeight?: string;
+  fontStyle?: "normal" | "italic";
 };
 
 type AppState = {
+  templateFolders: TemplateFolder[];
+  templateImages: TemplateImage[];
   templates: Template[];
   activeTemplateId: string;
   datasets: Dataset[];
@@ -110,17 +167,33 @@ const FALLBACK_TEXT_LAYER: TextLayer = {
   id: "layer_fallback",
   name: "Lớp chữ",
   column: "",
+  content: undefined,
   x: 80,
   y: 80,
   width: 320,
   fontFamily: "Be Vietnam Pro",
   fontSize: 42,
   fontWeight: "700",
+  fontStyle: "normal",
   color: "#071025",
   align: "left",
   lineHeight: 1.16,
   letterSpacing: 0,
   textTransform: "none"
+};
+
+const EMPTY_DATASET: Dataset = {
+  id: "",
+  name: "",
+  columns: [],
+  rows: [],
+  keyColumn: "",
+  importedAt: "",
+  sourceKind: undefined,
+  sourceName: undefined,
+  sourceUrl: undefined,
+  sourceMimeType: undefined,
+  sourceSize: undefined
 };
 
 declare global {
@@ -141,6 +214,9 @@ type CustomSelectProps = {
   options: SelectOption[];
   onChange: (value: string) => void;
   disabled?: boolean;
+  placeholder?: string;
+  searchable?: boolean;
+  searchPlaceholder?: string;
 };
 
 type HexColorInputProps = {
@@ -202,6 +278,7 @@ function HexColorInput({ value, onChange, disabled = false }: HexColorInputProps
         type="color"
         value={value}
         disabled={disabled}
+        onInput={(event) => handleChange(event.currentTarget.value)}
         onChange={(event) => handleChange(event.target.value)}
       />
       <button
@@ -236,21 +313,31 @@ function HexColorInput({ value, onChange, disabled = false }: HexColorInputProps
   );
 }
 
-function CustomSelect({ value, options, onChange, disabled = false }: CustomSelectProps) {
+function CustomSelect({
+  value,
+  options,
+  onChange,
+  disabled = false,
+  placeholder = "Chọn",
+  searchable = false,
+  searchPlaceholder = "Tìm kiếm"
+}: CustomSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const selectedOption = options.find((option) => option.value === value) || options[0];
+  const [selectSearch, setSelectSearch] = useState("");
+  const selectedOption = options.find((option) => option.value === value);
+  const visibleOptions = searchable && selectSearch.trim()
+    ? options.filter((option) => normalizeText(option.label).includes(normalizeText(selectSearch)))
+    : options;
 
   function commitValue(nextValue: string) {
     onChange(nextValue);
     setIsOpen(false);
+    setSelectSearch("");
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
     if (disabled) return;
-    const currentIndex = Math.max(
-      0,
-      options.findIndex((option) => option.value === value)
-    );
+    const currentIndex = options.findIndex((option) => option.value === value);
 
     if (event.key === "Escape") {
       setIsOpen(false);
@@ -267,7 +354,12 @@ function CustomSelect({ value, options, onChange, disabled = false }: CustomSele
       event.preventDefault();
       if (!options.length) return;
       const direction = event.key === "ArrowDown" ? 1 : -1;
-      const nextIndex = (currentIndex + direction + options.length) % options.length;
+      const nextIndex =
+        currentIndex === -1
+          ? direction === 1
+            ? 0
+            : options.length - 1
+          : (currentIndex + direction + options.length) % options.length;
       commitValue(options[nextIndex].value);
     }
   }
@@ -290,13 +382,27 @@ function CustomSelect({ value, options, onChange, disabled = false }: CustomSele
         onClick={() => setIsOpen((current) => !current)}
         onKeyDown={handleKeyDown}
       >
-        <span>{selectedOption?.label || ""}</span>
+        <span>{selectedOption?.label || placeholder}</span>
         <ChevronDown size={18} />
       </button>
 
       {isOpen ? (
         <div className="custom-select-menu" role="listbox">
-          {options.map((option) => {
+          {searchable ? (
+            <div className="custom-select-search">
+              <Search size={16} />
+              <input
+                autoFocus
+                value={selectSearch}
+                placeholder={searchPlaceholder}
+                onChange={(event) => setSelectSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setIsOpen(false);
+                }}
+              />
+            </div>
+          ) : null}
+          {visibleOptions.map((option) => {
             const isSelected = option.value === selectedOption?.value;
             return (
               <button
@@ -312,6 +418,9 @@ function CustomSelect({ value, options, onChange, disabled = false }: CustomSele
               </button>
             );
           })}
+          {!visibleOptions.length ? (
+            <div className="custom-select-empty">Không tìm thấy</div>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -320,14 +429,18 @@ function CustomSelect({ value, options, onChange, disabled = false }: CustomSele
 
 const STORAGE_KEY = "oh-property-maker-state-v2";
 const ADMIN_KEY = "oh-property-maker-admin-ok";
+const ADMIN_LAST_ACTIVITY_KEY = "oh-property-maker-admin-last-activity";
 const ADMIN_ACCOUNT_KEY = "oh-property-maker-admin-account";
 const ADMIN_PASSWORD_HASH_KEY = "oh-property-maker-admin-password-hash";
 const DEFAULT_ADMIN_ACCOUNT = "admin";
-const DEFAULT_ADMIN_HASH =
-  "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918";
+const DEFAULT_ADMIN_PASSWORD = "admin";
+const DEFAULT_TEMPLATE_FOLDER_ID = "folder_default";
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 0.15;
+const HISTORY_LIMIT = 80;
+const DEFAULT_ADDED_TEXT_FONT_SIZE = 24;
+const ADMIN_IDLE_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;
 
 const BASE_FONTS = ["Be Vietnam Pro", "Arial", "Inter", "Georgia", "Times New Roman"];
 
@@ -352,8 +465,24 @@ function getStoredAdminPasswordHash() {
   return (
     localStorage.getItem(ADMIN_PASSWORD_HASH_KEY) ||
     import.meta.env.VITE_ADMIN_CODE_HASH ||
-    DEFAULT_ADMIN_HASH
+    ""
   );
+}
+
+function touchAdminSession() {
+  localStorage.setItem(ADMIN_KEY, "1");
+  localStorage.setItem(ADMIN_LAST_ACTIVITY_KEY, String(Date.now()));
+}
+
+function clearAdminSession() {
+  localStorage.removeItem(ADMIN_KEY);
+  localStorage.removeItem(ADMIN_LAST_ACTIVITY_KEY);
+}
+
+function isAdminSessionValid() {
+  if (localStorage.getItem(ADMIN_KEY) !== "1") return false;
+  const lastActivity = Number(localStorage.getItem(ADMIN_LAST_ACTIVITY_KEY) || 0);
+  return Boolean(lastActivity && Date.now() - lastActivity <= ADMIN_IDLE_TIMEOUT_MS);
 }
 
 function toFileSlug(value: string) {
@@ -367,13 +496,7 @@ function toFileSlug(value: string) {
 }
 
 function guessKeyColumn(columns: string[]) {
-  const candidates = ["macan", "ma_can", "code", "unitcode", "canho", "ma"];
-  return (
-    columns.find((column) => candidates.includes(normalizeText(column))) ||
-    columns.find((column) => normalizeText(column).includes("macan")) ||
-    columns[0] ||
-    ""
-  );
+  return columns[0] || "";
 }
 
 function downloadDataUrl(dataUrl: string, filename: string) {
@@ -412,34 +535,187 @@ function loadHtmlImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
+async function readJsonResponse(response: Response) {
+  const text = await response.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function errorMessageFromApi(data: unknown, fallback: string) {
+  if (data && typeof data === "object" && "error" in data) {
+    const error = (data as { error?: unknown }).error;
+    if (typeof error === "string" && error.trim()) return error;
+  }
+  return fallback;
+}
+
+async function uploadAssetToCloudinary(file: File, resourceType: CloudinaryResourceType) {
+  const signatureResponse = await fetch("/api/cloudinary/sign", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ resourceType })
+  });
+  const signatureData = await readJsonResponse(signatureResponse);
+  if (!signatureResponse.ok) {
+    throw new Error(errorMessageFromApi(signatureData, "Không tạo được chữ ký Cloudinary"));
+  }
+  const signed = signatureData as {
+    apiKey: string;
+    folder: string;
+    timestamp: string;
+    signature: string;
+    uploadUrl: string;
+  } | null;
+  if (
+    !signed ||
+    typeof signed.apiKey !== "string" ||
+    typeof signed.folder !== "string" ||
+    typeof signed.timestamp !== "string" ||
+    typeof signed.signature !== "string" ||
+    typeof signed.uploadUrl !== "string"
+  ) {
+    throw new Error("Không tạo được chữ ký Cloudinary");
+  }
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("api_key", signed.apiKey);
+  formData.append("folder", signed.folder);
+  formData.append("timestamp", signed.timestamp);
+  formData.append("signature", signed.signature);
+
+  const uploadResponse = await fetch(signed.uploadUrl, {
+    method: "POST",
+    body: formData
+  });
+  const uploadData = await readJsonResponse(uploadResponse);
+  if (!uploadResponse.ok) {
+    throw new Error(errorMessageFromApi(uploadData, "Không tải file lên Cloudinary được"));
+  }
+  const uploaded = uploadData as {
+    secure_url?: string;
+    url?: string;
+    width?: number;
+    height?: number;
+  };
+  const url = uploaded.secure_url || uploaded.url;
+  if (!url) throw new Error("Cloudinary không trả về URL file");
+  return {
+    url,
+    width: uploaded.width,
+    height: uploaded.height
+  };
+}
+
 function cleanFontFamily(fileName: string) {
   return fileName
     .replace(/\.(woff2?|ttf|otf)$/i, "")
+    .replace(/^(?:\._|_)+/, "")
     .replace(/[^a-zA-Z0-9\s_-]/g, "")
     .trim()
     .replace(/\s+/g, " ");
 }
 
-function fontInfoFromFileName(fileName: string) {
-  const baseName = cleanFontFamily(fileName);
-  const styleMatch = baseName.match(
-    /(thin|extra\s*light|extralight|light|regular|medium|semi\s*bold|semibold|bold|extra\s*bold|extrabold|black|italic)$/i
+const FONT_WEIGHT_LABELS: Record<string, { label: string; weight: string }> = {
+  thin: { label: "Thin", weight: "100" },
+  hairline: { label: "Thin", weight: "100" },
+  extralight: { label: "Extra Light", weight: "200" },
+  ultralight: { label: "Extra Light", weight: "200" },
+  light: { label: "Light", weight: "300" },
+  regular: { label: "Regular", weight: "400" },
+  normal: { label: "Regular", weight: "400" },
+  book: { label: "Regular", weight: "400" },
+  medium: { label: "Medium", weight: "500" },
+  semibold: { label: "Semi Bold", weight: "600" },
+  demibold: { label: "Semi Bold", weight: "600" },
+  bold: { label: "Bold", weight: "700" },
+  extrablack: { label: "Extra Black", weight: "900" },
+  ultrablack: { label: "Extra Black", weight: "900" },
+  extrabold: { label: "Extra Bold", weight: "800" },
+  ultrabold: { label: "Extra Bold", weight: "800" },
+  black: { label: "Black", weight: "900" },
+  heavy: { label: "Black", weight: "900" }
+};
+
+function splitFontWords(value: string) {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeFontStyleToken(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function isRecognizedFontStyleName(rawStyleName: string) {
+  const tokens = splitFontWords(rawStyleName).split(/\s+/).filter(Boolean);
+  const isItalic = tokens.some((token) => /^italic$/i.test(token) || /^oblique$/i.test(token));
+  const weightToken = normalizeFontStyleToken(
+    tokens.filter((token) => !/^italic$/i.test(token) && !/^oblique$/i.test(token)).join("")
   );
-  const styleName = styleMatch?.[0]?.replace(/([a-z])([A-Z])/g, "$1 $2") || "Regular";
-  const family = styleMatch
-    ? baseName.slice(0, styleMatch.index).replace(/[-_]+$/g, "").trim()
-    : baseName;
+  return Boolean(FONT_WEIGHT_LABELS[weightToken]) || (isItalic && !weightToken);
+}
+
+function fontStyleDetails(rawStyleName: string) {
+  const readableStyleName = splitFontWords(rawStyleName)
+    .replace(/\bOblique\b/gi, "Italic")
+    .trim();
+  const tokens = readableStyleName.split(/\s+/).filter(Boolean);
+  const isItalic = tokens.some((token) => /^italic$/i.test(token) || /^oblique$/i.test(token));
+  const weightToken = normalizeFontStyleToken(
+    tokens.filter((token) => !/^italic$/i.test(token) && !/^oblique$/i.test(token)).join("")
+  );
+  const weightInfo = FONT_WEIGHT_LABELS[weightToken] || FONT_WEIGHT_LABELS.regular;
   return {
-    family: family || baseName || "Font tùy chỉnh",
-    styleName
+    styleName: `${weightInfo.label} ${weightInfo.weight}${isItalic ? " Italic" : ""}`,
+    fontWeight: weightInfo.weight,
+    fontStyle: isItalic ? ("italic" as const) : ("normal" as const)
   };
 }
 
+function layerFontStyleValue(layer: Pick<TextLayer, "fontWeight" | "fontStyle">) {
+  return layer.fontStyle === "italic" ? `italic ${layer.fontWeight}` : layer.fontWeight;
+}
+
+function fontInfoFromFileName(fileName: string) {
+  const baseName = cleanFontFamily(fileName);
+  const nameWithoutVariableSuffix = baseName.replace(/-?VariableFont.*$/i, "");
+  const words = splitFontWords(nameWithoutVariableSuffix).split(/\s+/).filter(Boolean);
+  let styleStartIndex = words.length;
+  for (let index = Math.max(0, words.length - 3); index < words.length; index += 1) {
+    if (isRecognizedFontStyleName(words.slice(index).join(" "))) {
+      styleStartIndex = index;
+      break;
+    }
+  }
+  const rawFamily = words.slice(0, styleStartIndex).join(" ") || nameWithoutVariableSuffix;
+  const rawStyle = words.slice(styleStartIndex).join(" ") || "Regular";
+  const style = fontStyleDetails(rawStyle);
+  const family = splitFontWords(rawFamily);
+  return {
+    family: family || splitFontWords(baseName) || "Font tuy chinh",
+    ...style
+  };
+}
 async function registerFont(font: CustomFont) {
   if (!("FontFace" in window)) return;
-  const existing = Array.from(document.fonts).some((item) => item.family === font.family);
+  const weight = font.fontWeight || "400";
+  const style = font.fontStyle || "normal";
+  const existing = Array.from(document.fonts).some(
+    (item) => item.family === font.family && item.weight === weight && item.style === style
+  );
   if (existing) return;
-  const face = new FontFace(font.family, `url(${font.dataUrl})`);
+  const face = new FontFace(font.family, `url(${font.dataUrl})`, {
+    weight,
+    style
+  });
   await face.load();
   document.fonts.add(face);
 }
@@ -486,6 +762,7 @@ function normalizeLayer(layer: Partial<TextLayer> | null | undefined, index = 0)
     id: typeof layer?.id === "string" && layer.id ? layer.id : uid("layer"),
     name: typeof layer?.name === "string" && layer.name ? layer.name : `Lớp chữ ${index + 1}`,
     column: typeof layer?.column === "string" ? layer.column : "",
+    content: typeof layer?.content === "string" ? layer.content : undefined,
     x: Number.isFinite(Number(layer?.x)) ? Number(layer?.x) : FALLBACK_TEXT_LAYER.x,
     y: Number.isFinite(Number(layer?.y)) ? Number(layer?.y) : FALLBACK_TEXT_LAYER.y,
     width: normalizePositiveNumber(layer?.width, FALLBACK_TEXT_LAYER.width),
@@ -498,6 +775,10 @@ function normalizeLayer(layer: Partial<TextLayer> | null | undefined, index = 0)
       typeof layer?.fontWeight === "string" && layer.fontWeight
         ? layer.fontWeight
         : FALLBACK_TEXT_LAYER.fontWeight,
+    fontStyle:
+      layer?.fontStyle === "italic" || layer?.fontStyle === "normal"
+        ? layer.fontStyle
+        : FALLBACK_TEXT_LAYER.fontStyle,
     color:
       typeof layer?.color === "string" && normalizeHexColor(layer.color)
         ? normalizeHexColor(layer.color)!
@@ -524,6 +805,10 @@ function normalizeTemplate(template: Partial<Template> | null | undefined, index
   return {
     id: typeof template?.id === "string" && template.id ? template.id : uid("template"),
     name,
+    folderId:
+      typeof template?.folderId === "string" && template.folderId
+        ? template.folderId
+        : DEFAULT_TEMPLATE_FOLDER_ID,
     width: normalizePositiveNumber(template?.width, 1080),
     height: normalizePositiveNumber(template?.height, 1350),
     backgroundDataUrl:
@@ -536,6 +821,60 @@ function normalizeTemplate(template: Partial<Template> | null | undefined, index
     updatedAt:
       typeof template?.updatedAt === "string" && template.updatedAt
         ? template.updatedAt
+        : new Date().toISOString()
+  };
+}
+
+function normalizeTemplateImage(
+  image: Partial<TemplateImage> | null | undefined,
+  index = 0
+): TemplateImage | null {
+  const dataUrl = typeof image?.dataUrl === "string" ? image.dataUrl : "";
+  if (!dataUrl) return null;
+  return {
+    id: typeof image?.id === "string" && image.id ? image.id : uid("image"),
+    name:
+      typeof image?.name === "string" && image.name.trim()
+        ? image.name
+        : `Ảnh mẫu ${index + 1}`,
+    folderId:
+      typeof image?.folderId === "string" && image.folderId
+        ? image.folderId
+        : DEFAULT_TEMPLATE_FOLDER_ID,
+    width: normalizePositiveNumber(image?.width, 1080),
+    height: normalizePositiveNumber(image?.height, 1350),
+    dataUrl,
+    createdAt:
+      typeof image?.createdAt === "string" && image.createdAt
+        ? image.createdAt
+        : new Date().toISOString()
+  };
+}
+
+function defaultTemplateFolder(): TemplateFolder {
+  return {
+    id: DEFAULT_TEMPLATE_FOLDER_ID,
+    name: "Ảnh mẫu",
+    parentId: null,
+    createdAt: new Date().toISOString()
+  };
+}
+
+function normalizeTemplateFolder(
+  folder: Partial<TemplateFolder> | null | undefined,
+  index = 0
+): TemplateFolder {
+  return {
+    id: typeof folder?.id === "string" && folder.id ? folder.id : uid("folder"),
+    name:
+      typeof folder?.name === "string" && folder.name.trim()
+        ? folder.name
+        : `Thư mục ${index + 1}`,
+    parentId:
+      typeof folder?.parentId === "string" && folder.parentId ? folder.parentId : null,
+    createdAt:
+      typeof folder?.createdAt === "string" && folder.createdAt
+        ? folder.createdAt
         : new Date().toISOString()
   };
 }
@@ -555,8 +894,25 @@ function getNextPageName(templates: Template[]) {
   return `Page ${pageNumber}`;
 }
 
+function flattenTemplateFolders(
+  folders: TemplateFolder[],
+  parentId: string | null = null,
+  depth = 0
+): Array<TemplateFolder & { depth: number }> {
+  return folders
+    .filter((folder) => folder.parentId === parentId)
+    .flatMap((folder) => [
+      { ...folder, depth },
+      ...flattenTemplateFolders(folders, folder.id, depth + 1)
+    ]);
+}
+
 function isBlankTemplate(template: Template | undefined) {
   return Boolean(template && !template.backgroundDataUrl && template.layers.length === 0);
+}
+
+function getTemplateLibraryImage(item: TemplateImage | Template) {
+  return "dataUrl" in item ? item.dataUrl : item.backgroundDataUrl;
 }
 
 function createInitialState(): AppState {
@@ -593,6 +949,7 @@ function createInitialState(): AppState {
   const template: Template = {
     id: "template_default",
     name: "Ảnh mẫu OneHousing",
+    folderId: DEFAULT_TEMPLATE_FOLDER_ID,
     width: 1080,
     height: 1350,
     backgroundDataUrl: defaultTemplateImage(),
@@ -666,11 +1023,110 @@ function createInitialState(): AppState {
   };
 
   return {
+    templateFolders: [
+      {
+        id: DEFAULT_TEMPLATE_FOLDER_ID,
+        name: "Ảnh mẫu",
+        parentId: null,
+        createdAt: new Date().toISOString()
+      }
+    ],
+    templateImages: [
+      {
+        id: "image_default",
+        name: "Ảnh mẫu OneHousing",
+        folderId: DEFAULT_TEMPLATE_FOLDER_ID,
+        width: 1080,
+        height: 1350,
+        dataUrl: defaultTemplateImage(),
+        createdAt: new Date().toISOString()
+      }
+    ],
     templates: [template],
     activeTemplateId: template.id,
     datasets: [dataset],
-    activeDatasetId: dataset.id,
+    activeDatasetId: "",
     customFonts: []
+  };
+}
+
+function normalizeAppState(parsed: Partial<AppState> | null | undefined): AppState {
+  if (!parsed || !Array.isArray(parsed.templates) || !parsed.templates.length) {
+    return createInitialState();
+  }
+  const templateFolders = Array.isArray(parsed.templateFolders)
+    ? parsed.templateFolders.map((folder, index) => normalizeTemplateFolder(folder, index))
+    : [defaultTemplateFolder()];
+  const normalizedFolders = templateFolders.length ? templateFolders : [defaultTemplateFolder()];
+  const folderIds = new Set(normalizedFolders.map((folder) => folder.id));
+  const fallbackFolderId = normalizedFolders[0]?.id || DEFAULT_TEMPLATE_FOLDER_ID;
+  const parsedAny = parsed as unknown as {
+    templates: Array<Partial<Template> & { libraryDataUrl?: string }>;
+    templateImages?: Partial<TemplateImage>[];
+  };
+  const migratedImages = parsedAny.templates
+    .map((template, index) => {
+      const dataUrl = template.libraryDataUrl || "";
+      if (!dataUrl) return null;
+      return normalizeTemplateImage(
+        {
+          id: template.id ? `image_${template.id}` : undefined,
+          name: template.name,
+          folderId: template.folderId,
+          width: template.width,
+          height: template.height,
+          dataUrl,
+          createdAt: template.updatedAt
+        },
+        index
+      );
+    })
+    .filter((image): image is TemplateImage => Boolean(image));
+  const savedImages = Array.isArray(parsedAny.templateImages)
+    ? parsedAny.templateImages
+        .map((image, index) => normalizeTemplateImage(image, index))
+        .filter((image): image is TemplateImage => Boolean(image))
+    : [];
+  const templateImages = [...savedImages, ...migratedImages].map((image) => ({
+    ...image,
+    folderId: folderIds.has(image.folderId) ? image.folderId : fallbackFolderId
+  }));
+  const templates = parsedAny.templates.filter((template) => !template.libraryDataUrl).map((template, index) => {
+    const normalizedTemplate = normalizeTemplate(template, index);
+    return {
+      ...normalizedTemplate,
+      folderId: folderIds.has(normalizedTemplate.folderId)
+        ? normalizedTemplate.folderId
+        : fallbackFolderId
+    };
+  });
+  if (!templates.length) {
+    templates.push({
+      id: uid("template"),
+      name: "Page 1",
+      folderId: fallbackFolderId,
+      width: 1080,
+      height: 1350,
+      backgroundDataUrl: "",
+      layers: [],
+      updatedAt: new Date().toISOString()
+    });
+  }
+  const activeTemplateId = templates.some((template) => template.id === parsed.activeTemplateId)
+    ? parsed.activeTemplateId || templates[0].id
+    : templates[0].id;
+  const datasets = Array.isArray(parsed.datasets) ? parsed.datasets.map((dataset) => ({
+    ...dataset,
+    keyColumn: dataset.columns[0] || dataset.keyColumn || ""
+  })) : [];
+  return {
+    templateFolders: normalizedFolders,
+    templateImages,
+    templates,
+    activeTemplateId,
+    datasets,
+    activeDatasetId: "",
+    customFonts: Array.isArray(parsed.customFonts) ? parsed.customFonts : []
   };
 }
 
@@ -678,18 +1134,7 @@ function loadState() {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (!saved) return createInitialState();
-    const parsed = JSON.parse(saved) as AppState;
-    if (!parsed.templates?.length || !parsed.datasets?.length) return createInitialState();
-    const templates = parsed.templates.map((template, index) => normalizeTemplate(template, index));
-    const activeTemplateId = templates.some((template) => template.id === parsed.activeTemplateId)
-      ? parsed.activeTemplateId
-      : templates[0].id;
-    return {
-      ...parsed,
-      templates,
-      activeTemplateId,
-      customFonts: Array.isArray(parsed.customFonts) ? parsed.customFonts : []
-    };
+    return normalizeAppState(JSON.parse(saved) as AppState);
   } catch {
     return createInitialState();
   }
@@ -744,7 +1189,10 @@ function getCoverCrop(image: HTMLImageElement | null, width: number, height: num
 }
 
 function formatLayerValue(layer: TextLayer, row: RowData | undefined) {
-  let value = row?.[layer.column] || `{${layer.column}}`;
+  let value =
+    typeof layer.content === "string"
+      ? layer.content || "Text"
+      : row?.[layer.column] || `{${layer.column}}`;
   if (layer.textTransform === "uppercase") value = value.toUpperCase();
   if (layer.textTransform === "lowercase") value = value.toLowerCase();
   return value;
@@ -788,17 +1236,18 @@ function isEditableTarget(target: EventTarget | null) {
 }
 
 export default function App() {
-  const [appState, setAppState] = useState<AppState>(() => loadState());
+  const [appState, setAppStateBase] = useState<AppState>(() => loadState());
+  const isAdminPath = typeof window !== "undefined" && window.location.pathname.startsWith("/admin");
+  const [historyVersion, setHistoryVersion] = useState(0);
   const [selectedRowIndex, setSelectedRowIndex] = useState(0);
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>(["layer_code"]);
-  const [isAdmin, setIsAdmin] = useState(() => localStorage.getItem(ADMIN_KEY) === "1");
+  const [isAdmin, setIsAdmin] = useState(() => isAdminSessionValid());
   const [editingPageId, setEditingPageId] = useState<string | null>(null);
   const [pagePendingDeleteId, setPagePendingDeleteId] = useState<string | null>(null);
   const [adminAccount, setAdminAccount] = useState(() => getStoredAdminAccount());
   const [adminLoginName, setAdminLoginName] = useState(() => getStoredAdminAccount());
   const [adminCode, setAdminCode] = useState("");
   const [adminError, setAdminError] = useState("");
-  const [showAdminModal, setShowAdminModal] = useState(false);
   const [showAdminSettingsModal, setShowAdminSettingsModal] = useState(false);
   const [adminSettingsName, setAdminSettingsName] = useState(() => getStoredAdminAccount());
   const [adminNewPassword, setAdminNewPassword] = useState("");
@@ -807,33 +1256,51 @@ export default function App() {
   const [adminSettingsError, setAdminSettingsError] = useState("");
   const [showDatasetLibraryModal, setShowDatasetLibraryModal] = useState(false);
   const [showDataImportModal, setShowDataImportModal] = useState(false);
+  const [isDataImportInline, setIsDataImportInline] = useState(false);
   const [showTemplateLibraryModal, setShowTemplateLibraryModal] = useState(false);
+  const [showTemplatePickerModal, setShowTemplatePickerModal] = useState(false);
   const [showFontLibraryModal, setShowFontLibraryModal] = useState(false);
   const [fontLibraryError, setFontLibraryError] = useState("");
   const [selectedDatasetIds, setSelectedDatasetIds] = useState<string[]>([]);
+  const [previewDatasetId, setPreviewDatasetId] = useState<string | null>(null);
+  const [datasetSearch, setDatasetSearch] = useState("");
   const [datasetLibraryError, setDatasetLibraryError] = useState("");
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
-  const [previewTemplate, setPreviewTemplate] = useState<Template | null>(null);
+  const [selectedTemplateFolderId, setSelectedTemplateFolderId] = useState(DEFAULT_TEMPLATE_FOLDER_ID);
+  const [selectedPickerFolderId, setSelectedPickerFolderId] = useState(DEFAULT_TEMPLATE_FOLDER_ID);
+  const [selectedPickerTemplateId, setSelectedPickerTemplateId] = useState<string | null>(null);
+  const [editingTemplateFolderId, setEditingTemplateFolderId] = useState<string | null>(null);
+  const [openTemplateFolderMenuId, setOpenTemplateFolderMenuId] = useState<string | null>(null);
+  const [previewTemplate, setPreviewTemplate] = useState<TemplateImage | null>(null);
   const [pendingTemplateUpload, setPendingTemplateUpload] = useState<{
     name: string;
     dataUrl: string;
     width: number;
     height: number;
+    file: File;
   } | null>(null);
   const [templateLibraryError, setTemplateLibraryError] = useState("");
   const [pendingDataset, setPendingDataset] = useState<PendingDataset | null>(null);
   const [publicSheetUrl, setPublicSheetUrl] = useState("");
   const [dataImportError, setDataImportError] = useState("");
   const [isReadingData, setIsReadingData] = useState(false);
+  const [isUploadingDataset, setIsUploadingDataset] = useState(false);
   const [isDraggingDataFile, setIsDraggingDataFile] = useState(false);
-  const [search, setSearch] = useState("");
   const [isExporting, setIsExporting] = useState(false);
+  const [isUploadingAsset, setIsUploadingAsset] = useState(false);
   const [storageWarning, setStorageWarning] = useState("");
+  const [cloudSync, setCloudSync] = useState<CloudSyncState>({
+    status: "loading",
+    message: "Đang kết nối cloud..."
+  });
   const [exportMimeType, setExportMimeType] = useState<"image/png" | "image/jpeg">("image/png");
   const [exportScale, setExportScale] = useState<"1" | "0.5" | "0.75">("1");
   const [stageWidth, setStageWidth] = useState(0);
   const [zoomLevel, setZoomLevel] = useState(1);
+  const [activeCanvasTool, setActiveCanvasTool] = useState<CanvasTool>("move");
+  const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [isCanvasPanning, setIsCanvasPanning] = useState(false);
+  const [inlineTextEditor, setInlineTextEditor] = useState<InlineTextEditor | null>(null);
   const [selectionBox, setSelectionBox] = useState({
     visible: false,
     x: 0,
@@ -846,6 +1313,8 @@ export default function App() {
   const transformerRef = useRef<Konva.Transformer>(null);
   const canvasWrapRef = useRef<HTMLDivElement>(null);
   const canvasShellRef = useRef<HTMLDivElement>(null);
+  const inlineTextEditorRef = useRef<HTMLTextAreaElement>(null);
+  const settingsMenuRef = useRef<HTMLDivElement>(null);
   const textRefs = useRef<Record<string, Konva.Text>>({});
   const selectionStartRef = useRef<{ x: number; y: number } | null>(null);
   const isSelectingRef = useRef(false);
@@ -853,6 +1322,13 @@ export default function App() {
   const appStateRef = useRef(appState);
   const selectedLayerIdsRef = useRef(selectedLayerIds);
   const isAdminRef = useRef(isAdmin);
+  const undoStackRef = useRef<AppState[]>([]);
+  const redoStackRef = useRef<AppState[]>([]);
+  const lastSessionTouchRef = useRef(0);
+  const remoteSyncEnabledRef = useRef(false);
+  const remoteStateReadyRef = useRef(false);
+  const skipNextRemoteSaveRef = useRef(false);
+  const remoteSaveVersionRef = useRef(0);
   const canvasPanRef = useRef<{
     x: number;
     y: number;
@@ -872,6 +1348,48 @@ export default function App() {
     positions: Record<string, { x: number; y: number }>;
   } | null>(null);
 
+  function setAppState(updater: AppStateUpdater) {
+    setAppStateBase((current) => {
+      const nextState =
+        typeof updater === "function" ? (updater as (state: AppState) => AppState)(current) : updater;
+      if (nextState === current) return current;
+      undoStackRef.current.push(current);
+      if (undoStackRef.current.length > HISTORY_LIMIT) {
+        undoStackRef.current.shift();
+      }
+      redoStackRef.current = [];
+      return nextState;
+    });
+    setHistoryVersion((current) => current + 1);
+  }
+
+  function undoLastChange() {
+    const previousState = undoStackRef.current.pop();
+    if (!previousState) return;
+    setAppStateBase((current) => {
+      redoStackRef.current.push(current);
+      return previousState;
+    });
+    setInlineTextEditor(null);
+    setSelectedLayerIds([]);
+    setHistoryVersion((current) => current + 1);
+  }
+
+  function redoLastChange() {
+    const nextState = redoStackRef.current.pop();
+    if (!nextState) return;
+    setAppStateBase((current) => {
+      undoStackRef.current.push(current);
+      if (undoStackRef.current.length > HISTORY_LIMIT) {
+        undoStackRef.current.shift();
+      }
+      return nextState;
+    });
+    setInlineTextEditor(null);
+    setSelectedLayerIds([]);
+    setHistoryVersion((current) => current + 1);
+  }
+
   const template = useMemo(
     () =>
       appState.templates.find((item) => item.id === appState.activeTemplateId) ||
@@ -885,17 +1403,103 @@ export default function App() {
   const dataset = useMemo(
     () =>
       appState.datasets.find((item) => item.id === appState.activeDatasetId) ||
-      appState.datasets[0],
+      EMPTY_DATASET,
     [appState.activeDatasetId, appState.datasets]
   );
+  const hasSelectedDataset = Boolean(dataset.id);
+  const previewDataset = useMemo(
+    () =>
+      previewDatasetId
+        ? appState.datasets.find((item) => item.id === previewDatasetId) || null
+        : null,
+    [appState.datasets, previewDatasetId]
+  );
+  const visibleDatasets = useMemo(() => {
+    const keyword = normalizeText(datasetSearch);
+    if (!keyword) return appState.datasets;
+    return appState.datasets.filter((item) => {
+      const importedAt = new Date(item.importedAt).toLocaleDateString("vi-VN");
+      return normalizeText(
+        `${item.name} ${item.rows.length} ${item.columns.length} ${importedAt}`
+      ).includes(keyword);
+    });
+  }, [appState.datasets, datasetSearch]);
 
-  const selectedRow = dataset.rows[selectedRowIndex] || dataset.rows[0];
+  const flattenedTemplateFolders = useMemo(
+    () => flattenTemplateFolders(appState.templateFolders),
+    [appState.templateFolders]
+  );
+  const fallbackTemplateFolderId =
+    appState.templateFolders[0]?.id || DEFAULT_TEMPLATE_FOLDER_ID;
+  const activeTemplateFolderId = appState.templateFolders.some(
+    (folder) => folder.id === selectedTemplateFolderId
+  )
+    ? selectedTemplateFolderId
+    : fallbackTemplateFolderId;
+  const activePickerFolderId = appState.templateFolders.some(
+    (folder) => folder.id === selectedPickerFolderId
+  )
+    ? selectedPickerFolderId
+    : activeTemplateFolderId;
+  const selectedTemplateFolder =
+    appState.templateFolders.find((folder) => folder.id === activeTemplateFolderId) ||
+    appState.templateFolders[0];
+  const canCreateSubfolder = Boolean(selectedTemplateFolder && !selectedTemplateFolder.parentId);
+  const selectedFolderChildren = appState.templateFolders.filter(
+    (folder) => folder.parentId === activeTemplateFolderId
+  );
+  const templatesInSelectedFolder = appState.templateImages.filter(
+    (item) => item.folderId === activeTemplateFolderId && getTemplateLibraryImage(item)
+  );
+  const templatesInPickerFolder = appState.templateImages.filter(
+    (item) => item.folderId === activePickerFolderId && getTemplateLibraryImage(item)
+  );
+  const selectedPickerTemplate = selectedPickerTemplateId
+    ? appState.templateImages.find((item) => item.id === selectedPickerTemplateId) || null
+    : null;
+  const isManagementPageOpen =
+    showTemplateLibraryModal || showDatasetLibraryModal || showFontLibraryModal;
+
+  const selectedRow = hasSelectedDataset
+    ? dataset.rows[selectedRowIndex] || dataset.rows[0]
+    : undefined;
   const selectedLayers = template.layers.filter((layer) => selectedLayerIds.includes(layer.id));
   const selectedLayer = selectedLayers[0] || null;
   const hasMultiSelection = selectedLayers.length > 1;
+  const selectedFontStyleOptions = useMemo(() => {
+    const baseOptions = ["100", "200", "300", "400", "500", "600", "700", "800", "900"].map(
+      (weight) => ({
+        value: `${weight}|normal`,
+        label: weight
+      })
+    );
+    if (!selectedLayer) return baseOptions;
+    const customOptions = appState.customFonts
+      .filter((font) => font.family === selectedLayer.fontFamily)
+      .map((font) => ({
+        value: `${font.fontWeight || "400"}|${font.fontStyle || "normal"}`,
+        label: font.styleName || `${font.fontWeight || "400"}${font.fontStyle === "italic" ? " Italic" : ""}`
+      }));
+    const uniqueOptions = Array.from(
+      new Map(customOptions.map((option) => [option.value, option])).values()
+    );
+    const options = uniqueOptions.length ? uniqueOptions : baseOptions;
+    const selectedValue = `${selectedLayer.fontWeight}|${selectedLayer.fontStyle || "normal"}`;
+    return options.some((option) => option.value === selectedValue)
+      ? options
+      : [{ value: selectedValue, label: selectedValue.replace("|", " ") }, ...options];
+  }, [appState.customFonts, selectedLayer]);
+  const canUndo = historyVersion >= 0 && undoStackRef.current.length > 0;
+  const canRedo = historyVersion >= 0 && redoStackRef.current.length > 0;
+  const selectedOutlineColor = selectedLayers.some((layer) => typeof layer.content !== "string")
+    ? "#dc2626"
+    : "#256fe6";
   const backgroundImage = useImage(template.backgroundDataUrl);
   const backgroundCrop = getCoverCrop(backgroundImage, template.width, template.height);
-  const availableFonts = [...BASE_FONTS, ...appState.customFonts.map((font) => font.family)];
+  const availableFonts = Array.from(
+    new Set([...BASE_FONTS, ...appState.customFonts.map((font) => font.family)])
+  );
+  const canAddTextLayer = isAdmin;
   const uploadedFontGroups = useMemo(() => {
     const groups = new Map<
       string,
@@ -909,18 +1513,16 @@ export default function App() {
       group.styles.push(font);
       groups.set(font.family, group);
     });
-    return Array.from(groups.values());
+    return Array.from(groups.values()).map((group) => ({
+      ...group,
+      styles: [...group.styles].sort((left, right) => {
+        const leftWeight = Number(left.fontWeight || "400");
+        const rightWeight = Number(right.fontWeight || "400");
+        if (leftWeight !== rightWeight) return leftWeight - rightWeight;
+        return (left.fontStyle || "normal").localeCompare(right.fontStyle || "normal");
+      })
+    }));
   }, [appState.customFonts]);
-
-  const filteredRows = useMemo(() => {
-    const needle = normalizeText(search);
-    if (!needle) return dataset.rows.map((row, index) => ({ row, index }));
-    return dataset.rows
-      .map((row, index) => ({ row, index }))
-      .filter(({ row }) =>
-        Object.values(row).some((value) => normalizeText(String(value)).includes(needle))
-      );
-  }, [dataset.rows, search]);
 
   const fitScale = useMemo(() => {
     if (!stageWidth) return 0.5;
@@ -930,15 +1532,138 @@ export default function App() {
   const zoomPercent = Math.round(zoomLevel * 100);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
-      setStorageWarning("");
-    } catch {
-      setStorageWarning(
-        "Không lưu được dữ liệu vào trình duyệt vì dung lượng ảnh quá lớn. Trang mới vẫn dùng được trong phiên hiện tại."
-      );
+    let active = true;
+
+    async function bootstrapCloudState() {
+      try {
+        const response = await fetch("/api/state", { credentials: "include" });
+        const data = await readJsonResponse(response);
+        if (!active) return;
+        const isStateResponse =
+          data !== null &&
+          typeof data === "object" &&
+          ("state" in data || "updatedAt" in data);
+        if (!response.ok || !isStateResponse) {
+          remoteSyncEnabledRef.current = false;
+          remoteStateReadyRef.current = true;
+          setCloudSync({
+            status: "local",
+            message: "Đang lưu trên trình duyệt"
+          });
+          return;
+        }
+        remoteSyncEnabledRef.current = true;
+        remoteStateReadyRef.current = true;
+        const remoteState = (data as { state?: AppState | null } | null)?.state;
+        if (remoteState) {
+          const normalized = normalizeAppState(remoteState);
+          skipNextRemoteSaveRef.current = true;
+          appStateRef.current = normalized;
+          setAppStateBase(normalized);
+        }
+        setCloudSync({
+          status: "saved",
+          message: remoteState ? "Đã tải dữ liệu cloud" : "Cloud đã sẵn sàng"
+        });
+      } catch {
+        if (!active) return;
+        remoteSyncEnabledRef.current = false;
+        remoteStateReadyRef.current = true;
+        setCloudSync({
+          status: "local",
+          message: "Đang lưu trên trình duyệt"
+        });
+      }
     }
+
+    async function restoreAdminSession() {
+      try {
+        const response = await fetch("/api/auth/session", { credentials: "include" });
+        const data = (await readJsonResponse(response)) as {
+          authenticated?: boolean;
+          account?: string | null;
+        } | null;
+        if (!active || !response.ok || !data?.authenticated) return;
+        touchAdminSession();
+        lastSessionTouchRef.current = Date.now();
+        setIsAdmin(true);
+        if (data.account) {
+          localStorage.setItem(ADMIN_ACCOUNT_KEY, data.account);
+          setAdminAccount(data.account);
+          setAdminLoginName(data.account);
+          setAdminSettingsName(data.account);
+        }
+      } catch {
+        // Local admin fallback remains available.
+      }
+    }
+
+    bootstrapCloudState();
+    restoreAdminSession();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const saveTimer = window.setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(appState));
+        setStorageWarning("");
+      } catch {
+        setStorageWarning(
+          "Không lưu được dữ liệu vào trình duyệt vì dung lượng ảnh quá lớn. Trang mới vẫn dùng được trong phiên hiện tại."
+        );
+      }
+    }, 180);
+
+    return () => window.clearTimeout(saveTimer);
   }, [appState]);
+
+  useEffect(() => {
+    if (!remoteSyncEnabledRef.current || !remoteStateReadyRef.current || !isAdmin) return;
+    if (skipNextRemoteSaveRef.current) {
+      skipNextRemoteSaveRef.current = false;
+      return;
+    }
+
+    const saveVersion = remoteSaveVersionRef.current + 1;
+    remoteSaveVersionRef.current = saveVersion;
+    setCloudSync({
+      status: "saving",
+      message: "Đang lưu cloud..."
+    });
+    const saveTimer = window.setTimeout(async () => {
+      try {
+        const response = await fetch("/api/state", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ state: appState })
+        });
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          throw new Error(errorMessageFromApi(data, "Không lưu được Neon"));
+        }
+        if (remoteSaveVersionRef.current === saveVersion) {
+          setCloudSync({
+            status: "saved",
+            message: "Đã lưu cloud"
+          });
+        }
+      } catch (error) {
+        if (remoteSaveVersionRef.current === saveVersion) {
+          setCloudSync({
+            status: "error",
+            message: error instanceof Error ? error.message : "Lỗi lưu cloud"
+          });
+        }
+      }
+    }, 900);
+
+    return () => window.clearTimeout(saveTimer);
+  }, [appState, isAdmin]);
+
 
   useEffect(() => {
     appState.customFonts.forEach((font) => {
@@ -968,6 +1693,22 @@ export default function App() {
     shell.addEventListener("wheel", lockScrollWhileZooming, { passive: false });
     return () => shell.removeEventListener("wheel", lockScrollWhileZooming);
   }, []);
+
+  useEffect(() => {
+    if (!showSettingsMenu) return;
+
+    const closeSettingsMenuOnOutsideClick = (event: PointerEvent) => {
+      const menu = settingsMenuRef.current;
+      if (!menu || menu.contains(event.target as Node)) return;
+      setShowSettingsMenu(false);
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+    };
+
+    document.addEventListener("pointerdown", closeSettingsMenuOnOutsideClick);
+    return () => document.removeEventListener("pointerdown", closeSettingsMenuOnOutsideClick);
+  }, [showSettingsMenu]);
 
   useLayoutEffect(() => {
     const anchor = zoomAnchorRef.current;
@@ -1004,6 +1745,16 @@ export default function App() {
   }, [dataset.rows.length, selectedRowIndex]);
 
   useEffect(() => {
+    const fallbackFolderId = appState.templateFolders[0]?.id || DEFAULT_TEMPLATE_FOLDER_ID;
+    if (!appState.templateFolders.some((folder) => folder.id === selectedTemplateFolderId)) {
+      setSelectedTemplateFolderId(fallbackFolderId);
+    }
+    if (!appState.templateFolders.some((folder) => folder.id === selectedPickerFolderId)) {
+      setSelectedPickerFolderId(fallbackFolderId);
+    }
+  }, [appState.templateFolders, selectedTemplateFolderId, selectedPickerFolderId]);
+
+  useEffect(() => {
     const transformer = transformerRef.current;
     if (!transformer) return;
     const nodes = selectedLayerIds
@@ -1014,16 +1765,84 @@ export default function App() {
   }, [selectedLayerIds, template.layers]);
 
   useEffect(() => {
+    if (!inlineTextEditor) return;
+    const editor = inlineTextEditorRef.current;
+    if (!editor) return;
+    editor.focus();
+    editor.select();
+  }, [inlineTextEditor?.layerId]);
+
+  useEffect(() => {
+    if (!inlineTextEditor) return;
+    const layer = template.layers.find((item) => item.id === inlineTextEditor.layerId);
+    if (!layer || typeof layer.content !== "string") {
+      setInlineTextEditor(null);
+    }
+  }, [inlineTextEditor, template.layers]);
+
+  useEffect(() => {
     appStateRef.current = appState;
     selectedLayerIdsRef.current = selectedLayerIds;
     isAdminRef.current = isAdmin;
   }, [appState, selectedLayerIds, isAdmin]);
 
   useEffect(() => {
+    if (!isAdmin) return;
+
+    function handleAdminActivity() {
+      const lastActivity = Number(localStorage.getItem(ADMIN_LAST_ACTIVITY_KEY) || 0);
+      if (!lastActivity || Date.now() - lastActivity > ADMIN_IDLE_TIMEOUT_MS) {
+        logoutAdmin();
+        return;
+      }
+      const now = Date.now();
+      if (now - lastSessionTouchRef.current > 60_000) {
+        touchAdminSession();
+        lastSessionTouchRef.current = now;
+      }
+    }
+
+    handleAdminActivity();
+    window.addEventListener("pointerdown", handleAdminActivity);
+    window.addEventListener("keydown", handleAdminActivity);
+    window.addEventListener("focus", handleAdminActivity);
+    return () => {
+      window.removeEventListener("pointerdown", handleAdminActivity);
+      window.removeEventListener("keydown", handleAdminActivity);
+      window.removeEventListener("focus", handleAdminActivity);
+    };
+  }, [isAdmin]);
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isEditableTarget(event.target)) return;
+      const isControlShortcut = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+      if (isControlShortcut && key === "z") {
+        event.preventDefault();
+        undoLastChange();
+        return;
+      }
+      if (isControlShortcut && key === "y") {
+        event.preventDefault();
+        redoLastChange();
+        return;
+      }
       if (event.key.toLowerCase() === "z") {
         isZoomShortcutPressedRef.current = true;
+        return;
+      }
+
+      const toolShortcuts: Record<string, CanvasTool> = {
+        v: "move",
+        h: "hand",
+        t: "text"
+      };
+      const shortcutTool = toolShortcuts[event.key.toLowerCase()];
+      if (shortcutTool) {
+        if (shortcutTool === "text" && !isAdminRef.current) return;
+        event.preventDefault();
+        setActiveCanvasTool(shortcutTool);
         return;
       }
 
@@ -1124,6 +1943,43 @@ export default function App() {
         selectedLayerIds.includes(layer.id) ? { ...layer, ...patch } : layer
       )
     }));
+  }
+
+  function beginInlineFreeTextEdit(
+    layer: TextLayer,
+    event: Konva.KonvaEventObject<MouseEvent | TouchEvent>
+  ) {
+    if (!isAdmin || typeof layer.content !== "string") return;
+    event.cancelBubble = true;
+    setActiveCanvasTool("move");
+    setSelectedLayerIds([layer.id]);
+    setInlineTextEditor({
+      layerId: layer.id,
+      value: layer.content
+    });
+  }
+
+  function commitInlineTextEdit(value = inlineTextEditor?.value) {
+    if (!inlineTextEditor || typeof value !== "string") return;
+    const nextValue = value.trim() ? value : "Text";
+    updateTemplate((current) => ({
+      ...current,
+      updatedAt: new Date().toISOString(),
+      layers: current.layers.map((layer) =>
+        layer.id === inlineTextEditor.layerId
+          ? {
+              ...layer,
+              content: nextValue,
+              name: nextValue.trim() || "Free text"
+            }
+          : layer
+      )
+    }));
+    setInlineTextEditor(null);
+  }
+
+  function cancelInlineTextEdit() {
+    setInlineTextEditor(null);
   }
 
   function getSelectedLayerBounds() {
@@ -1294,9 +2150,36 @@ export default function App() {
       column,
       x,
       y,
-      width: Math.min(420, template.width - x - 32),
+      width: Math.max(80, Math.min(420, template.width - x - 32)),
       fontFamily: availableFonts[0],
-      fontSize: 42,
+      fontSize: DEFAULT_ADDED_TEXT_FONT_SIZE,
+      fontWeight: "700",
+      color: "#071025",
+      align: "left",
+      lineHeight: 1.16,
+      letterSpacing: 0,
+      textTransform: "none"
+    };
+    updateTemplate((current) => ({
+      ...current,
+      updatedAt: new Date().toISOString(),
+      layers: [...current.layers, layer]
+    }));
+    setSelectedLayerIds([layer.id]);
+  }
+
+  function addFreeTextLayer(x = 120, y = 120) {
+    if (!isAdmin) return;
+    const layer: TextLayer = {
+      id: uid("layer"),
+      name: "Free text",
+      column: "",
+      content: "Text",
+      x,
+      y,
+      width: Math.max(80, Math.min(420, template.width - x - 32)),
+      fontFamily: availableFonts[0],
+      fontSize: DEFAULT_ADDED_TEXT_FONT_SIZE,
       fontWeight: "700",
       color: "#071025",
       align: "left",
@@ -1325,27 +2208,75 @@ export default function App() {
   async function handleAdminUnlock(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setAdminError("");
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          account: adminLoginName.trim(),
+          password: adminCode.trim()
+        })
+      });
+      const data = await readJsonResponse(response);
+      if (response.ok) {
+        const account = (data as { account?: string } | null)?.account || adminLoginName.trim();
+        touchAdminSession();
+        lastSessionTouchRef.current = Date.now();
+        localStorage.setItem(ADMIN_ACCOUNT_KEY, account);
+        setIsAdmin(true);
+        setAdminAccount(account);
+        setAdminLoginName(account);
+        setAdminSettingsName(account);
+        setAdminCode("");
+        skipNextRemoteSaveRef.current = false;
+        if (remoteSyncEnabledRef.current) {
+          setCloudSync({ status: "ready", message: "Cloud đã sẵn sàng" });
+        }
+        return;
+      }
+      if (response.status !== 404 && response.status !== 500) {
+        setAdminError(errorMessageFromApi(data, "Tai khoan hoac mat khau khong dung"));
+        return;
+      }
+    } catch {
+      // Fall back to local admin when the Vercel API is not running.
+    }
     if (adminLoginName.trim() !== getStoredAdminAccount()) {
       setAdminError("Tài khoản quản trị không đúng");
       return;
     }
     const hash = await sha256(adminCode.trim());
-    if (hash !== getStoredAdminPasswordHash()) {
+    const storedHash = getStoredAdminPasswordHash();
+    const matchesLocalPassword = storedHash
+      ? hash === storedHash
+      : adminCode.trim() === DEFAULT_ADMIN_PASSWORD;
+    if (!matchesLocalPassword) {
       setAdminError("Mật khẩu quản trị không đúng");
       return;
     }
-    localStorage.setItem(ADMIN_KEY, "1");
+    touchAdminSession();
+    lastSessionTouchRef.current = Date.now();
+    skipNextRemoteSaveRef.current = false;
     setIsAdmin(true);
     setAdminAccount(getStoredAdminAccount());
     setAdminLoginName(getStoredAdminAccount());
     setAdminCode("");
-    setShowAdminModal(false);
   }
 
   function logoutAdmin() {
-    localStorage.removeItem(ADMIN_KEY);
+    fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "include"
+    }).catch(() => undefined);
+    clearAdminSession();
     setIsAdmin(false);
     setSelectedLayerIds([]);
+    setAdminCode("");
+    setAdminError("");
+    setAdminLoginName(getStoredAdminAccount());
+    setShowAdminSettingsModal(false);
+    closeManagementPages();
   }
 
   function openAdminSettings() {
@@ -1377,6 +2308,41 @@ export default function App() {
         setAdminSettingsError("Xác nhận mật khẩu chưa khớp");
         return;
       }
+    }
+    if (remoteSyncEnabledRef.current) {
+      try {
+        const response = await fetch("/api/auth/settings", {
+          method: "PUT",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            account: nextAccount,
+            password: adminNewPassword.trim()
+          })
+        });
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          throw new Error(errorMessageFromApi(data, "Khong luu duoc tai khoan admin"));
+        }
+        localStorage.setItem(ADMIN_ACCOUNT_KEY, nextAccount);
+        if (adminNewPassword) {
+          localStorage.setItem(ADMIN_PASSWORD_HASH_KEY, await sha256(adminNewPassword.trim()));
+        }
+        setAdminNewPassword("");
+        setAdminConfirmPassword("");
+        setAdminAccount(nextAccount);
+        setAdminLoginName(nextAccount);
+        setAdminSettingsName(nextAccount);
+        setAdminSettingsMessage("Da luu thong tin quan tri tren cloud");
+        return;
+      } catch (error) {
+        setAdminSettingsError(
+          error instanceof Error ? error.message : "Khong luu duoc tai khoan admin"
+        );
+        return;
+      }
+    }
+    if (adminNewPassword) {
       localStorage.setItem(ADMIN_PASSWORD_HASH_KEY, await sha256(adminNewPassword.trim()));
       setAdminNewPassword("");
       setAdminConfirmPassword("");
@@ -1390,9 +2356,12 @@ export default function App() {
 
   function openTemplateLibraryModal() {
     if (!isAdmin) return;
+    setShowDatasetLibraryModal(false);
+    setShowFontLibraryModal(false);
     setShowTemplateLibraryModal(true);
     setTemplateLibraryError("");
     setSelectedTemplateIds([]);
+    setSelectedTemplateFolderId(activeTemplateFolderId);
   }
 
   function closeTemplateLibraryModal() {
@@ -1401,6 +2370,156 @@ export default function App() {
     setSelectedTemplateIds([]);
     setPendingTemplateUpload(null);
     setPreviewTemplate(null);
+    setEditingTemplateFolderId(null);
+    setOpenTemplateFolderMenuId(null);
+  }
+
+  function closeManagementPages() {
+    closeTemplateLibraryModal();
+    closeDatasetLibraryModal();
+    closeFontLibraryModal();
+  }
+
+  function selectTemplateFolder(folderId: string) {
+    setSelectedTemplateFolderId(folderId);
+    setSelectedTemplateIds([]);
+    setPendingTemplateUpload(null);
+    setTemplateLibraryError("");
+    setOpenTemplateFolderMenuId(null);
+  }
+
+  function createTemplateFolder(parentId: string | null) {
+    if (!isAdmin) return;
+    if (parentId) {
+      const parentFolder = appState.templateFolders.find((folder) => folder.id === parentId);
+      if (parentFolder?.parentId) {
+        setTemplateLibraryError("Chỉ được tạo subfolder trong folder gốc");
+        return;
+      }
+    }
+    const nextFolder: TemplateFolder = {
+      id: uid("folder"),
+      name: "Thư mục mới",
+      parentId,
+      createdAt: new Date().toISOString()
+    };
+    setAppState((current) => ({
+      ...current,
+      templateFolders: [...current.templateFolders, nextFolder]
+    }));
+    setSelectedTemplateFolderId(nextFolder.id);
+    setEditingTemplateFolderId(nextFolder.id);
+    setOpenTemplateFolderMenuId(null);
+    setTemplateLibraryError("");
+  }
+
+  function renameTemplateFolder(folderId: string, name: string) {
+    if (!isAdmin) return;
+    setAppState((current) => ({
+      ...current,
+      templateFolders: current.templateFolders.map((folder) =>
+        folder.id === folderId ? { ...folder, name } : folder
+      )
+    }));
+  }
+
+  function finishRenameTemplateFolder(folderId: string, name: string) {
+    if (!name.trim()) renameTemplateFolder(folderId, "Thư mục chưa đặt tên");
+    setEditingTemplateFolderId(null);
+  }
+
+  function collectTemplateFolderIds(folderId: string, folders = appState.templateFolders) {
+    const ids = new Set<string>([folderId]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      folders.forEach((folder) => {
+        if (folder.parentId && ids.has(folder.parentId) && !ids.has(folder.id)) {
+          ids.add(folder.id);
+          changed = true;
+        }
+      });
+    }
+    return ids;
+  }
+
+  function deleteTemplateFolder(folderId: string) {
+    if (!isAdmin) return;
+    if (appState.templateFolders.length <= 1) {
+      setTemplateLibraryError("Phải giữ lại ít nhất 1 folder");
+      setOpenTemplateFolderMenuId(null);
+      return;
+    }
+    const folderIdsToDelete = collectTemplateFolderIds(folderId);
+    if (folderIdsToDelete.size >= appState.templateFolders.length) {
+      setTemplateLibraryError("Không thể xóa toàn bộ folder");
+      setOpenTemplateFolderMenuId(null);
+      return;
+    }
+    const folderName =
+      appState.templateFolders.find((folder) => folder.id === folderId)?.name || "folder này";
+    if (!window.confirm(`Xóa "${folderName}" và toàn bộ folder con, ảnh bên trong?`)) {
+      setOpenTemplateFolderMenuId(null);
+      return;
+    }
+    const remainingFolders = appState.templateFolders.filter(
+      (folder) => !folderIdsToDelete.has(folder.id)
+    );
+    const fallbackFolderId = remainingFolders[0]?.id || DEFAULT_TEMPLATE_FOLDER_ID;
+    setAppState((current) => {
+      const nextFolders = current.templateFolders.filter(
+        (folder) => !folderIdsToDelete.has(folder.id)
+      );
+      const nextFolderId = nextFolders[0]?.id || DEFAULT_TEMPLATE_FOLDER_ID;
+      return {
+        ...current,
+        templateFolders: nextFolders,
+        templateImages: current.templateImages.filter(
+          (item) => !folderIdsToDelete.has(item.folderId)
+        )
+      };
+    });
+    setSelectedTemplateFolderId(fallbackFolderId);
+    setSelectedPickerFolderId(fallbackFolderId);
+    setSelectedTemplateIds([]);
+    setPendingTemplateUpload(null);
+    setEditingTemplateFolderId(null);
+    setOpenTemplateFolderMenuId(null);
+    setTemplateLibraryError("");
+  }
+
+  function openTemplatePickerModal() {
+    setShowTemplatePickerModal(true);
+    setSelectedPickerFolderId(activeTemplateFolderId);
+    setSelectedPickerTemplateId(null);
+  }
+
+  function closeTemplatePickerModal() {
+    setShowTemplatePickerModal(false);
+    setSelectedPickerTemplateId(null);
+  }
+
+  function applyTemplateImageToCurrentTemplate(templateId: string) {
+    const sourceTemplate = appState.templateImages.find((item) => item.id === templateId);
+    if (!sourceTemplate || !getTemplateLibraryImage(sourceTemplate)) return;
+    updateTemplate((current) => ({
+      ...current,
+      width: sourceTemplate.width,
+      height: sourceTemplate.height,
+      backgroundDataUrl: getTemplateLibraryImage(sourceTemplate),
+      updatedAt: new Date().toISOString()
+    }));
+    setZoomLevel(1);
+    closeTemplatePickerModal();
+  }
+
+  function removeCurrentTemplateImage() {
+    if (!template.backgroundDataUrl) return;
+    updateTemplate((current) => ({
+      ...current,
+      backgroundDataUrl: "",
+      updatedAt: new Date().toISOString()
+    }));
   }
 
   async function prepareTemplateUpload(file: File | undefined) {
@@ -1411,80 +2530,59 @@ export default function App() {
       name: file.name.replace(/\.[^.]+$/, "") || "Ảnh mẫu mới",
       dataUrl,
       width: image.naturalWidth || image.width,
-      height: image.naturalHeight || image.height
+      height: image.naturalHeight || image.height,
+      file
     });
     setTemplateLibraryError("");
   }
 
-  function savePendingTemplateUpload() {
+  async function savePendingTemplateUpload() {
     if (!pendingTemplateUpload || !isAdmin) return;
-    if (isBlankTemplate(template)) {
-      updateTemplate((current) => ({
-        ...current,
-        width: pendingTemplateUpload.width,
-        height: pendingTemplateUpload.height,
-        backgroundDataUrl: pendingTemplateUpload.dataUrl,
-        updatedAt: new Date().toISOString()
-      }));
-      setPendingTemplateUpload(null);
-      setSelectedLayerIds([]);
-      setZoomLevel(1);
-      closeTemplateLibraryModal();
+    if (!selectedTemplateFolder) {
+      setTemplateLibraryError("Vui lòng tạo hoặc chọn folder trước khi tải ảnh");
       return;
     }
-
-    const nextTemplate: Template = {
-      id: uid("template"),
+    let assetUrl = pendingTemplateUpload.dataUrl;
+    let width = pendingTemplateUpload.width;
+    let height = pendingTemplateUpload.height;
+    if (remoteSyncEnabledRef.current) {
+      setIsUploadingAsset(true);
+      try {
+        const uploaded = await uploadAssetToCloudinary(pendingTemplateUpload.file, "image");
+        assetUrl = uploaded.url;
+        width = uploaded.width || width;
+        height = uploaded.height || height;
+      } catch (error) {
+        setTemplateLibraryError(
+          error instanceof Error ? error.message : "Không tải ảnh lên Cloudinary được"
+        );
+        setIsUploadingAsset(false);
+        return;
+      }
+      setIsUploadingAsset(false);
+    }
+    const nextImage: TemplateImage = {
+      id: uid("image"),
       name: pendingTemplateUpload.name.trim() || "Ảnh mẫu mới",
-      width: pendingTemplateUpload.width,
-      height: pendingTemplateUpload.height,
-      backgroundDataUrl: pendingTemplateUpload.dataUrl,
-      layers: [],
-      updatedAt: new Date().toISOString()
+      folderId: activeTemplateFolderId,
+      width,
+      height,
+      dataUrl: assetUrl,
+      createdAt: new Date().toISOString()
     };
     setAppState((current) => ({
       ...current,
-      templates: [nextTemplate, ...current.templates],
-      activeTemplateId: nextTemplate.id
+      templateImages: [nextImage, ...current.templateImages]
     }));
     setPendingTemplateUpload(null);
-    setSelectedLayerIds([]);
-    setZoomLevel(1);
-  }
-
-  function importTemplateToEditor(templateId: string) {
-    const nextTemplate = appState.templates.find((item) => item.id === templateId);
-    if (!nextTemplate) return;
-    if (
-      template.id !== templateId &&
-      isBlankTemplate(template) &&
-      nextTemplate.backgroundDataUrl
-    ) {
-      updateTemplate((current) => ({
-        ...current,
-        width: nextTemplate.width,
-        height: nextTemplate.height,
-        backgroundDataUrl: nextTemplate.backgroundDataUrl,
-        updatedAt: new Date().toISOString()
-      }));
-      setSelectedLayerIds([]);
-      setZoomLevel(1);
-      closeTemplateLibraryModal();
-      return;
-    }
-
-    setAppState((current) => ({
-      ...current,
-      activeTemplateId: templateId
-    }));
-    setSelectedLayerIds(nextTemplate.layers[0] ? [nextTemplate.layers[0].id] : []);
-    setZoomLevel(1);
-    closeTemplateLibraryModal();
+    setTemplateLibraryError("");
   }
 
   function activatePage(templateId: string) {
     const nextTemplate = appState.templates.find((item) => item.id === templateId);
     if (!nextTemplate) return;
+    closeManagementPages();
+    setShowSettingsMenu(false);
     setAppState((current) => ({
       ...current,
       activeTemplateId: templateId
@@ -1498,6 +2596,7 @@ export default function App() {
     const nextTemplate: Template = {
       id: uid("template"),
       name: getNextPageName(currentState.templates),
+      folderId: currentState.templateFolders[0]?.id || DEFAULT_TEMPLATE_FOLDER_ID,
       width: 1080,
       height: 1350,
       backgroundDataUrl: "",
@@ -1510,6 +2609,8 @@ export default function App() {
       activeTemplateId: nextTemplate.id
     };
     appStateRef.current = nextState;
+    closeManagementPages();
+    setShowSettingsMenu(false);
     setAppState(nextState);
     setEditingPageId(null);
     setSelectedLayerIds(nextTemplate.layers[0] ? [nextTemplate.layers[0].id] : []);
@@ -1563,6 +2664,15 @@ export default function App() {
     }));
   }
 
+  function renameTemplateImage(imageId: string, name: string) {
+    setAppState((current) => ({
+      ...current,
+      templateImages: current.templateImages.map((item) =>
+        item.id === imageId ? { ...item, name } : item
+      )
+    }));
+  }
+
   function toggleTemplateSelection(templateId: string) {
     setSelectedTemplateIds((current) =>
       current.includes(templateId)
@@ -1573,31 +2683,22 @@ export default function App() {
 
   function deleteSelectedTemplates() {
     if (!selectedTemplateIds.length || !isAdmin) return;
-    if (selectedTemplateIds.length >= appState.templates.length) {
-      setTemplateLibraryError("Phải giữ lại ít nhất 1 ảnh mẫu");
-      return;
-    }
     setAppState((current) => {
-      const remaining = current.templates.filter((item) => !selectedTemplateIds.includes(item.id));
-      const activeTemplateId = selectedTemplateIds.includes(current.activeTemplateId)
-        ? remaining[0].id
-        : current.activeTemplateId;
       return {
         ...current,
-        templates: remaining,
-        activeTemplateId
+        templateImages: current.templateImages.filter(
+          (item) => !selectedTemplateIds.includes(item.id)
+        )
       };
     });
-    if (selectedTemplateIds.includes(appState.activeTemplateId)) {
-      const remaining = appState.templates.filter((item) => !selectedTemplateIds.includes(item.id));
-      setSelectedLayerIds(remaining[0]?.layers[0] ? [remaining[0].layers[0].id] : []);
-    }
     setSelectedTemplateIds([]);
     setTemplateLibraryError("");
   }
 
   function openFontLibraryModal() {
     if (!isAdmin) return;
+    setShowTemplateLibraryModal(false);
+    setShowDatasetLibraryModal(false);
     setShowFontLibraryModal(true);
     setFontLibraryError("");
   }
@@ -1607,20 +2708,41 @@ export default function App() {
     setFontLibraryError("");
   }
 
-  async function handleFontUpload(file: File | undefined) {
-    if (!file || !isAdmin) return;
+  async function handleFontUpload(files: FileList | File[] | undefined | null) {
+    if (!files || !isAdmin) return;
+    const fontFiles = Array.from(files).filter(
+      (file) =>
+        /\.(woff2?|ttf|otf)$/i.test(file.name) &&
+        !file.name.startsWith("._") &&
+        file.size > 1024
+    );
+    if (!fontFiles.length) {
+      setFontLibraryError("Chỉ hỗ trợ file font thật `.woff`, `.woff2`, `.ttf`, `.otf`.");
+      return;
+    }
+
     try {
-      const { family, styleName } = fontInfoFromFileName(file.name);
-      const dataUrl = await fileToDataUrl(file);
-      const font = { family, dataUrl, fileName: file.name, styleName };
-      await registerFont(font).catch(() => undefined);
+      const fonts = await Promise.all(
+        fontFiles.map(async (file) => {
+          const { family, styleName, fontWeight, fontStyle } = fontInfoFromFileName(file.name);
+          const dataUrl = remoteSyncEnabledRef.current
+            ? (await uploadAssetToCloudinary(file, "raw")).url
+            : await fileToDataUrl(file);
+          const font = { family, dataUrl, fileName: file.name, styleName, fontWeight, fontStyle };
+          await registerFont(font).catch(() => undefined);
+          return font;
+        })
+      );
       setAppState((current) => ({
         ...current,
         customFonts: [
           ...current.customFonts.filter(
-            (item) => !(item.family === family && item.styleName === styleName)
+            (item) =>
+              !fonts.some(
+                (font) => font.family === item.family && font.styleName === item.styleName
+              )
           ),
-          font
+          ...fonts
         ]
       }));
       setFontLibraryError("");
@@ -1689,7 +2811,14 @@ export default function App() {
 
     const nextDataset = datasetFromMatrix(matrix, file.name.replace(/\.[^.]+$/, ""));
     if (!nextDataset) throw new Error("File không có cột hoặc dòng dữ liệu hợp lệ");
-    return nextDataset;
+    return {
+      ...nextDataset,
+      sourceKind: "upload" as const,
+      sourceName: file.name,
+      sourceMimeType: file.type || undefined,
+      sourceSize: file.size,
+      sourceFile: file
+    };
   }
 
   function publicGoogleSheetCsvUrl(url: string) {
@@ -1717,7 +2846,12 @@ export default function App() {
     }
     const nextDataset = datasetFromMatrix(parsed.data, "Google Sheet public");
     if (!nextDataset) throw new Error("Sheet không có cột hoặc dòng dữ liệu hợp lệ");
-    return nextDataset;
+    return {
+      ...nextDataset,
+      sourceKind: "google-sheet" as const,
+      sourceName: "Google Sheet public",
+      sourceUrl: url.trim()
+    };
   }
 
   async function prepareDatasetReview(source: Promise<PendingDataset>) {
@@ -1737,6 +2871,8 @@ export default function App() {
 
   function openDatasetLibraryModal() {
     if (!isAdmin) return;
+    setShowTemplateLibraryModal(false);
+    setShowFontLibraryModal(false);
     setShowDatasetLibraryModal(true);
     setDatasetLibraryError("");
     setSelectedDatasetIds([]);
@@ -1746,10 +2882,14 @@ export default function App() {
     setShowDatasetLibraryModal(false);
     setDatasetLibraryError("");
     setSelectedDatasetIds([]);
+    setPreviewDatasetId(null);
+    setDatasetSearch("");
+    setIsDataImportInline(false);
+    closeDataImportModal();
   }
 
   function openDataImportFromLibrary() {
-    setShowDatasetLibraryModal(false);
+    setIsDataImportInline(true);
     openDataImportModal();
   }
 
@@ -1762,9 +2902,11 @@ export default function App() {
 
   function closeDataImportModal() {
     setShowDataImportModal(false);
+    setIsDataImportInline(false);
     setPendingDataset(null);
     setDataImportError("");
     setIsReadingData(false);
+    setIsUploadingDataset(false);
     setIsDraggingDataFile(false);
   }
 
@@ -1787,22 +2929,8 @@ export default function App() {
     }));
   }
 
-  function activateDataset(datasetId: string) {
-    if (!isAdmin) return;
-    setAppState((current) => ({
-      ...current,
-      activeDatasetId: datasetId
-    }));
-    setSelectedRowIndex(0);
-    setSearch("");
-  }
-
   function deleteSelectedDatasets() {
     if (!isAdmin || !selectedDatasetIds.length) return;
-    if (selectedDatasetIds.length >= appState.datasets.length) {
-      setDatasetLibraryError("Cần giữ lại ít nhất 1 bộ dữ liệu để app hoạt động");
-      return;
-    }
 
     setAppState((current) => {
       const datasets = current.datasets.filter(
@@ -1810,7 +2938,7 @@ export default function App() {
       );
       const activeDatasetId = datasets.some((item) => item.id === current.activeDatasetId)
         ? current.activeDatasetId
-        : datasets[0].id;
+        : "";
       return {
         ...current,
         datasets,
@@ -1818,38 +2946,75 @@ export default function App() {
       };
     });
     setSelectedDatasetIds([]);
+    setPreviewDatasetId((current) =>
+      current && selectedDatasetIds.includes(current) ? null : current
+    );
     setSelectedRowIndex(0);
-    setSearch("");
+    setDatasetLibraryError("");
   }
 
-  function commitPendingDataset() {
-    if (!pendingDataset || !isAdmin) return;
+  function deleteDataset(datasetId: string) {
+    if (!isAdmin) return;
+
+    setAppState((current) => {
+      const datasets = current.datasets.filter((item) => item.id !== datasetId);
+      const activeDatasetId = datasets.some((item) => item.id === current.activeDatasetId)
+        ? current.activeDatasetId
+        : "";
+      return {
+        ...current,
+        datasets,
+        activeDatasetId
+      };
+    });
+    setSelectedDatasetIds((current) => current.filter((id) => id !== datasetId));
+    setPreviewDatasetId((current) => (current === datasetId ? null : current));
+    setSelectedRowIndex(0);
+    setDatasetLibraryError("");
+  }
+
+  async function commitPendingDataset() {
+    if (!pendingDataset || !isAdmin || isUploadingDataset) return;
+
+    const { sourceFile, ...pendingDatasetData } = pendingDataset;
+    let datasetData: Omit<Dataset, "id" | "importedAt"> = pendingDatasetData;
+
+    if (sourceFile && remoteSyncEnabledRef.current) {
+      setIsUploadingDataset(true);
+      setDataImportError("");
+      try {
+        const uploaded = await uploadAssetToCloudinary(sourceFile, "raw");
+        datasetData = {
+          ...pendingDatasetData,
+          sourceKind: "upload",
+          sourceName: pendingDatasetData.sourceName || sourceFile.name,
+          sourceMimeType: pendingDatasetData.sourceMimeType || sourceFile.type || undefined,
+          sourceSize: pendingDatasetData.sourceSize || sourceFile.size,
+          sourceUrl: uploaded.url
+        };
+      } catch (error) {
+        setDataImportError(
+          error instanceof Error ? error.message : "Không tải file dữ liệu lên Cloudinary được"
+        );
+        setIsUploadingDataset(false);
+        return;
+      }
+      setIsUploadingDataset(false);
+    }
 
     const dataset: Dataset = {
       id: uid("dataset"),
-      ...pendingDataset,
+      ...datasetData,
       importedAt: new Date().toISOString()
     };
 
     setAppState((current) => ({
       ...current,
-      datasets: [dataset, ...current.datasets],
-      activeDatasetId: dataset.id
+      datasets: [dataset, ...current.datasets]
     }));
     setSelectedRowIndex(0);
-    setSearch("");
     closeDataImportModal();
     setShowDatasetLibraryModal(true);
-  }
-
-  function setKeyColumn(keyColumn: string) {
-    if (!isAdmin) return;
-    setAppState((current) => ({
-      ...current,
-      datasets: current.datasets.map((item) =>
-        item.id === dataset.id ? { ...item, keyColumn } : item
-      )
-    }));
   }
 
   function handleColumnDrop(event: React.DragEvent<HTMLDivElement>) {
@@ -1882,6 +3047,11 @@ export default function App() {
     if (!isStageOrBackground) return;
     const pointer = getLogicalPointer();
     if (!pointer) return;
+    if (activeCanvasTool === "text") {
+      addFreeTextLayer(Math.round(pointer.x), Math.round(pointer.y));
+      return;
+    }
+    if (activeCanvasTool !== "move") return;
     selectionStartRef.current = pointer;
     isSelectingRef.current = true;
     setSelectionBox({ visible: true, x: pointer.x, y: pointer.y, width: 0, height: 0 });
@@ -1944,6 +3114,9 @@ export default function App() {
     event: Konva.KonvaEventObject<MouseEvent | TouchEvent>
   ) {
     if ("button" in event.evt && event.evt.button === 1) return;
+    if (activeCanvasTool !== "move") {
+      setActiveCanvasTool("move");
+    }
     const nativeEvent = event.evt as MouseEvent;
     if ("shiftKey" in nativeEvent && (nativeEvent.shiftKey || nativeEvent.ctrlKey || nativeEvent.metaKey)) {
       setSelectedLayerIds((current) =>
@@ -2089,7 +3262,8 @@ export default function App() {
   }
 
   function beginCanvasPan(event: React.PointerEvent<HTMLDivElement>) {
-    if (event.button !== 1) return;
+    const shouldPan = event.button === 1 || (activeCanvasTool === "hand" && event.button === 0);
+    if (!shouldPan) return;
     event.preventDefault();
     event.stopPropagation();
     const shell = event.currentTarget;
@@ -2166,6 +3340,51 @@ export default function App() {
     setSelectedLayerIds(fresh.templates[0].layers[0] ? [fresh.templates[0].layers[0].id] : []);
   }
 
+  if (!isAdmin && isAdminPath) {
+    return (
+      <main className="login-shell">
+        <form className="login-card" onSubmit={handleAdminUnlock}>
+          <div className="login-brand">
+            <img src="https://eventci.vercel.app/favicon.ico" alt="" className="login-logo" />
+            <div>
+              <div className="login-brand-name">OneHousing</div>
+              <div className="login-brand-sub">Công cụ tạo ảnh chỉ căn</div>
+            </div>
+          </div>
+
+          <div className="login-copy">
+            <h1>Đăng nhập quản trị</h1>
+            <p>Nhập tài khoản admin để quản lý ảnh mẫu, dữ liệu, phông chữ và chỉnh sửa thiết kế.</p>
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="admin-account-input">Tài khoản</label>
+            <input
+              id="admin-account-input"
+              autoFocus
+              value={adminLoginName}
+              onChange={(event) => setAdminLoginName(event.target.value)}
+            />
+          </div>
+          <div className="form-group">
+            <label htmlFor="admin-code-input">Mật khẩu</label>
+            <input
+              id="admin-code-input"
+              type="password"
+              value={adminCode}
+              onChange={(event) => setAdminCode(event.target.value)}
+            />
+          </div>
+          {adminError ? <div className="form-error">{adminError}</div> : null}
+          <button type="submit" className="btn blue full">
+            <Lock size={18} />
+            Đăng nhập
+          </button>
+        </form>
+      </main>
+    );
+  }
+
   return (
     <div className="app-shell">
       <aside className="side-nav">
@@ -2173,7 +3392,7 @@ export default function App() {
           <img src="https://eventci.vercel.app/favicon.ico" alt="" className="brand-icon" />
           <div>
             <div className="brand-name">OneHousing</div>
-            <div className="brand-sub">Ảnh căn</div>
+            <div className="brand-sub">Công cụ tạo ảnh chỉ căn</div>
           </div>
         </div>
 
@@ -2199,7 +3418,9 @@ export default function App() {
               <div
                 key={item.id}
                 className={
-                  item.id === appState.activeTemplateId ? "page-row active" : "page-row"
+                  item.id === appState.activeTemplateId && !isManagementPageOpen
+                    ? "page-row active"
+                    : "page-row"
                 }
                 onClick={() => activatePage(item.id)}
               >
@@ -2251,69 +3472,80 @@ export default function App() {
           </div>
         </div>
 
-        <div className="side-footer">
-          <button
-            type="button"
-            className={isAdmin ? "side-link" : "status-pill"}
-            disabled={!isAdmin}
-            onClick={openAdminSettings}
-          >
-            {isAdmin ? <BadgeCheck size={16} /> : <Lock size={16} />}
-            {isAdmin ? "Đổi mật khẩu" : "Nhân viên"}
-          </button>
-          {isAdmin ? (
-            <button className="side-link" type="button" onClick={logoutAdmin}>
-              <LogOut size={18} />
-              Đăng xuất
-            </button>
-          ) : (
-            <button className="side-link" type="button" onClick={() => setShowAdminModal(true)}>
-              <Lock size={18} />
-              Mở quản trị
-            </button>
-          )}
-        </div>
+        {isAdmin ? (
+          <div className="side-footer">
+              <div
+                ref={settingsMenuRef}
+                className={showSettingsMenu ? "settings-menu-wrap open" : "settings-menu-wrap"}
+              >
+                <button
+                  type="button"
+                  className={showSettingsMenu ? "side-tab on" : "side-tab"}
+                  aria-expanded={showSettingsMenu}
+                  onClick={() => setShowSettingsMenu((current) => !current)}
+                >
+                  <Settings size={18} />
+                  Cài đặt
+                  <ChevronDown className="settings-tab-caret" size={16} />
+                </button>
+                <div className="settings-submenu" role="menu">
+                  <button
+                    type="button"
+                    className="settings-subtab"
+                    onClick={() => {
+                      setShowSettingsMenu(false);
+                      openTemplateLibraryModal();
+                    }}
+                  >
+                    <ImageUp size={17} />
+                    Ảnh mẫu
+                  </button>
+                  <button
+                    type="button"
+                    className="settings-subtab"
+                    onClick={() => {
+                      setShowSettingsMenu(false);
+                      openDatasetLibraryModal();
+                    }}
+                  >
+                    <FileSpreadsheet size={17} />
+                    Dữ liệu
+                  </button>
+                  <button
+                    type="button"
+                    className="settings-subtab"
+                    onClick={() => {
+                      setShowSettingsMenu(false);
+                      openFontLibraryModal();
+                    }}
+                  >
+                    <Type size={17} />
+                    Phông chữ
+                  </button>
+                </div>
+              </div>
+              <button type="button" className="side-link" onClick={openAdminSettings}>
+                <BadgeCheck size={16} />
+                Đổi mật khẩu
+              </button>
+              <button className="side-link" type="button" onClick={logoutAdmin}>
+                <LogOut size={18} />
+                Đăng xuất
+              </button>
+          </div>
+        ) : null}
       </aside>
 
       <main className="main-panel">
         <header className="admin-header">
           <div className="admin-header-main">
-            <div className="header-mark">
-              <Sparkles size={22} />
-            </div>
-            <div>
-              <h1>Studio ảnh căn</h1>
-              <p>{template.name} · {template.width} x {template.height}px</p>
-            </div>
+            <p className="page-size-title">
+              {template.name} · {template.width} x {template.height}px
+            </p>
           </div>
-          <div className="admin-header-actions">
-            <button
-              className={`btn ${isAdmin ? "" : "disabled"}`}
-              type="button"
-              disabled={!isAdmin}
-              onClick={openTemplateLibraryModal}
-            >
-              <ImageUp size={18} />
-              Ảnh mẫu
-            </button>
-            <button
-              className={`btn ${isAdmin ? "" : "disabled"}`}
-              type="button"
-              disabled={!isAdmin}
-              onClick={openDatasetLibraryModal}
-            >
-              <FileSpreadsheet size={18} />
-              Dữ liệu
-            </button>
-            <button
-              className={`btn ${isAdmin ? "" : "disabled"}`}
-              type="button"
-              disabled={!isAdmin}
-              onClick={openFontLibraryModal}
-            >
-              <Type size={18} />
-              Phông chữ
-            </button>
+          <div className={`cloud-sync-pill ${cloudSync.status}`}>
+            <Save size={15} />
+            {cloudSync.message}
           </div>
         </header>
 
@@ -2324,100 +3556,112 @@ export default function App() {
             <div className="panel-head">
               <div>
                 <h2>Dữ liệu căn</h2>
-                <p>{dataset.rows.length} dòng · {dataset.columns.length} cột</p>
+                <p>
+                  {hasSelectedDataset
+                    ? `${dataset.rows.length} dòng · ${dataset.columns.length} cột`
+                    : "Chưa chọn bộ dữ liệu"}
+                </p>
               </div>
               <Columns3 size={20} />
+            </div>
+
+            <div className="form-group">
+              <label>Thêm ảnh</label>
+              {template.backgroundDataUrl ? (
+                <div className="selected-template-preview">
+                  <img src={template.backgroundDataUrl} alt={template.name} />
+                  <button
+                    type="button"
+                    className="selected-template-delete"
+                    title="Bỏ ảnh hiện tại"
+                    aria-label="Bỏ ảnh hiện tại"
+                    onClick={removeCurrentTemplateImage}
+                  >
+                    <X size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    className="selected-template-change"
+                    onClick={openTemplatePickerModal}
+                  >
+                    Thay ảnh
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="btn full"
+                  onClick={openTemplatePickerModal}
+                >
+                  <ImageUp size={18} />
+                  Thêm ảnh
+                </button>
+              )}
             </div>
 
             <div className="form-group">
               <label>Bộ dữ liệu</label>
               <CustomSelect
                 value={dataset.id}
+                placeholder="Chọn bộ dữ liệu"
                 options={appState.datasets.map((item) => ({
                   value: item.id,
                   label: item.name
                 }))}
-                onChange={(nextValue) =>
+                onChange={(nextValue) => {
                   setAppState((current) => ({
                     ...current,
                     activeDatasetId: nextValue
-                  }))
-                }
+                  }));
+                  setSelectedRowIndex(0);
+                }}
               />
             </div>
 
-            <div className="form-group">
-              <label>Mã căn</label>
-              <CustomSelect
-                value={String(selectedRowIndex)}
-                options={dataset.rows.map((row, index) => ({
-                  value: String(index),
-                  label: row[dataset.keyColumn] || `Dòng ${index + 1}`
-                }))}
-                onChange={(nextValue) => setSelectedRowIndex(Number(nextValue))}
-              />
-            </div>
+            {hasSelectedDataset ? (
+              <>
+                <div className="form-group">
+                  <label>Mã căn</label>
+                  <CustomSelect
+                    value={String(selectedRowIndex)}
+                    options={dataset.rows.map((row, index) => ({
+                      value: String(index),
+                      label: row[dataset.keyColumn] || `Dòng ${index + 1}`
+                    }))}
+                    onChange={(nextValue) => setSelectedRowIndex(Number(nextValue))}
+                    searchable
+                    searchPlaceholder="Tìm mã căn"
+                  />
+                </div>
 
-            <div className="search-control">
-              <Search size={18} />
-              <input
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Tìm căn"
-              />
-              {search ? (
-                <button
-                  type="button"
-                  className="icon-btn"
-                  title="Xóa tìm kiếm"
-                  onClick={() => setSearch("")}
-                >
-                  <X size={16} />
-                </button>
-              ) : null}
-            </div>
-
-            <div className="row-list">
-              {filteredRows.slice(0, 60).map(({ row, index }) => (
-                <button
-                  type="button"
-                  key={`${row[dataset.keyColumn]}_${index}`}
-                  className={index === selectedRowIndex ? "unit-row on" : "unit-row"}
-                  onClick={() => setSelectedRowIndex(index)}
-                >
-                  <span>{row[dataset.keyColumn] || `Dòng ${index + 1}`}</span>
-                  <small>
-                    {row["dự án"] || row.du_an || row.project || row["du an"] || row["tòa"] || row.toa || ""}
-                  </small>
-                </button>
-              ))}
-            </div>
-
-            <div className="column-section">
-              <div className="section-label">Cột dữ liệu</div>
-              <div className="column-grid">
-                {dataset.columns.map((column) => (
-                  <button
-                    type="button"
-                    key={column}
-                    className="column-chip"
-                    draggable={isAdmin}
-                    onDragStart={(event) =>
-                      event.dataTransfer.setData("text/column", column)
-                    }
-                    onClick={() => addTextLayer(column)}
-                    disabled={!isAdmin}
-                  >
-                    <Plus size={14} />
-                    {column}
-                  </button>
-                ))}
-              </div>
-            </div>
+                <div className="column-section">
+                  <div className="section-label">Cột dữ liệu</div>
+                  <div className="column-grid">
+                    {dataset.columns.map((column) => (
+                      <button
+                        type="button"
+                        key={column}
+                        className="column-chip"
+                        draggable={isAdmin}
+                        onDragStart={(event) =>
+                          event.dataTransfer.setData("text/column", column)
+                        }
+                        onClick={() => addTextLayer(column)}
+                        disabled={!isAdmin}
+                      >
+                        <Plus size={14} />
+                        {column}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            ) : null}
           </section>
 
           <section className="canvas-panel" ref={canvasWrapRef}>
             <div className="canvas-toolbar">
+              <div className="canvas-toolbar-left">
               <div className="zoom-controls" aria-label="Điều khiển zoom">
                 <button
                   type="button"
@@ -2448,6 +3692,27 @@ export default function App() {
                   Vừa khung
                 </button>
               </div>
+              <div className="history-controls" aria-label="Hoàn tác và làm lại">
+                <button
+                  type="button"
+                  className="history-btn"
+                  title="Undo (Ctrl+Z)"
+                  onClick={undoLastChange}
+                  disabled={!canUndo}
+                >
+                  <Undo2 size={17} />
+                </button>
+                <button
+                  type="button"
+                  className="history-btn"
+                  title="Redo (Ctrl+Y)"
+                  onClick={redoLastChange}
+                  disabled={!canRedo}
+                >
+                  <Redo2 size={17} />
+                </button>
+              </div>
+              </div>
               <div className="canvas-meta">
                 {selectedRow?.[dataset.keyColumn] || "Xem trước"}
               </div>
@@ -2455,7 +3720,7 @@ export default function App() {
 
             <div
               ref={canvasShellRef}
-              className={isCanvasPanning ? "canvas-shell panning" : "canvas-shell"}
+              className={`canvas-shell ${activeCanvasTool}-tool${isCanvasPanning ? " panning" : ""}`}
               onWheel={handleCanvasWheel}
               onPointerDown={beginCanvasPan}
               onPointerMove={updateCanvasPan}
@@ -2469,8 +3734,9 @@ export default function App() {
               onDrop={handleColumnDrop}
             >
               <div className="canvas-workspace">
+                <div className="stage-stack">
                 <div
-                  className="stage-card"
+                  className={template.backgroundDataUrl ? "stage-card" : "stage-card transparent"}
                   style={{
                     width: template.width * stageScale,
                     height: template.height * stageScale
@@ -2518,14 +3784,17 @@ export default function App() {
                         width={layer.width}
                         fontFamily={layer.fontFamily}
                         fontSize={layer.fontSize}
-                        fontStyle={layer.fontWeight}
+                        fontStyle={layerFontStyleValue(layer)}
                         fill={layer.color}
                         align={layer.align}
                         lineHeight={layer.lineHeight}
                         letterSpacing={layer.letterSpacing}
-                        draggable={isAdmin}
+                        draggable={isAdmin && activeCanvasTool === "move"}
+                        visible={inlineTextEditor?.layerId !== layer.id}
                         onMouseDown={(event) => selectLayerFromCanvas(layer.id, event)}
                         onTap={(event) => selectLayerFromCanvas(layer.id, event)}
+                        onDblClick={(event) => beginInlineFreeTextEdit(layer, event)}
+                        onDblTap={(event) => beginInlineFreeTextEdit(layer, event)}
                         onDragStart={(event) => handleLayerDragStart(layer.id, event)}
                         onDragMove={(event) => handleLayerDragMove(layer.id, event)}
                         onDragEnd={(event) => handleLayerDragEnd(layer.id, event)}
@@ -2545,10 +3814,11 @@ export default function App() {
                     ) : null}
                     <Transformer
                       ref={transformerRef}
+                      visible={activeCanvasTool === "move" && !inlineTextEditor}
                       rotateEnabled={false}
                       enabledAnchors={["middle-left", "middle-right"]}
-                      borderStroke="#256fe6"
-                      anchorStroke="#256fe6"
+                      borderStroke={selectedOutlineColor}
+                      anchorStroke={selectedOutlineColor}
                       anchorFill="#ffffff"
                       boundBoxFunc={(oldBox, newBox) =>
                         newBox.width < 80 ? oldBox : newBox
@@ -2556,7 +3826,108 @@ export default function App() {
                     />
                   </Layer>
                   </Stage>
+                  {inlineTextEditor
+                    ? (() => {
+                        const layer = template.layers.find(
+                          (item) => item.id === inlineTextEditor.layerId
+                        );
+                        if (!layer || typeof layer.content !== "string") return null;
+                        const editorLineHeight = Math.max(
+                          16,
+                          layer.fontSize * layer.lineHeight * stageScale
+                        );
+                        const editorLineCount = Math.max(
+                          1,
+                          inlineTextEditor.value.split(/\r\n|\r|\n/).length
+                        );
+                        return (
+                          <textarea
+                            ref={inlineTextEditorRef}
+                            className="inline-text-editor"
+                            rows={editorLineCount}
+                            value={inlineTextEditor.value}
+                            style={{
+                              left: layer.x * stageScale,
+                              top: layer.y * stageScale,
+                              width: Math.max(80, layer.width * stageScale),
+                              height: editorLineHeight * editorLineCount,
+                              fontFamily: layer.fontFamily,
+                              fontSize: Math.max(12, layer.fontSize * stageScale),
+                              fontWeight: layer.fontWeight,
+                              fontStyle: layer.fontStyle || "normal",
+                              color: layer.color,
+                              lineHeight: `${editorLineHeight}px`,
+                              letterSpacing: layer.letterSpacing * stageScale,
+                              textAlign: layer.align
+                            }}
+                            onChange={(event) =>
+                              setInlineTextEditor((current) =>
+                                current
+                                  ? {
+                                      ...current,
+                                      value: event.target.value
+                                    }
+                                  : current
+                              )
+                            }
+                            onBlur={() => commitInlineTextEdit()}
+                            onKeyDown={(event) => {
+                              if (event.key === "Escape") {
+                                event.preventDefault();
+                                cancelInlineTextEdit();
+                                return;
+                              }
+                              if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                                event.preventDefault();
+                                commitInlineTextEdit();
+                              }
+                            }}
+                          />
+                        );
+                      })()
+                    : null}
                 </div>
+                </div>
+              </div>
+              <div
+                className="canvas-tools floating-canvas-tools"
+                aria-label="Công cụ canvas"
+                onPointerDown={(event) => event.stopPropagation()}
+                onPointerMove={(event) => event.stopPropagation()}
+                onPointerUp={(event) => event.stopPropagation()}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  className={activeCanvasTool === "move" ? "tool-btn active" : "tool-btn"}
+                  title="Move (V)"
+                  aria-pressed={activeCanvasTool === "move"}
+                  onClick={() => setActiveCanvasTool("move")}
+                >
+                  <MousePointer2 size={17} />
+                  <span>Move</span>
+                </button>
+                <button
+                  type="button"
+                  className={activeCanvasTool === "hand" ? "tool-btn active" : "tool-btn"}
+                  title="Hand tool (H)"
+                  aria-pressed={activeCanvasTool === "hand"}
+                  onClick={() => setActiveCanvasTool("hand")}
+                >
+                  <Hand size={17} />
+                  <span>Hand</span>
+                </button>
+                <button
+                  type="button"
+                  className={activeCanvasTool === "text" ? "tool-btn active" : "tool-btn"}
+                  title="Thêm text (T)"
+                  aria-pressed={activeCanvasTool === "text"}
+                  onClick={() => setActiveCanvasTool("text")}
+                  disabled={!canAddTextLayer}
+                >
+                  <Type size={18} />
+                  <span>Text</span>
+                </button>
               </div>
             </div>
           </section>
@@ -2670,50 +4041,72 @@ export default function App() {
                     </div>
                   </div>
                 ) : null}
+                {typeof selectedLayer.content === "string" ? (
+                  <div className="form-group">
+                    <label>Nội dung text</label>
+                    <textarea
+                      rows={3}
+                      value={selectedLayer.content}
+                      disabled={!isAdmin || hasMultiSelection}
+                      onChange={(event) =>
+                        updateSelectedLayer({
+                          content: event.target.value,
+                          name: event.target.value.trim() || "Free text"
+                        })
+                      }
+                    />
+                  </div>
+                ) : (
+                  <div className="form-group">
+                    <label>Gắn cột</label>
+                    <CustomSelect
+                      value={selectedLayer.column}
+                      disabled={!isAdmin || hasMultiSelection}
+                      options={dataset.columns.map((column) => ({
+                        value: column,
+                        label: column
+                      }))}
+                      onChange={(nextValue) =>
+                        updateSelectedLayer({
+                          column: nextValue,
+                          name: nextValue
+                        })
+                      }
+                    />
+                  </div>
+                )}
+
                 <div className="form-group">
-                  <label>Gắn cột</label>
+                  <label>Tên font</label>
                   <CustomSelect
-                    value={selectedLayer.column}
-                    disabled={!isAdmin || hasMultiSelection}
-                    options={dataset.columns.map((column) => ({
-                      value: column,
-                      label: column
+                    value={selectedLayer.fontFamily}
+                    disabled={!isAdmin}
+                    options={availableFonts.map((font) => ({
+                      value: font,
+                      label: font
                     }))}
-                    onChange={(nextValue) =>
-                      updateSelectedLayer({
-                        column: nextValue,
-                        name: nextValue
-                      })
-                    }
+                    onChange={(nextValue) => updateSelectedLayer({ fontFamily: nextValue })}
                   />
                 </div>
 
                 <div className="form-row">
                   <div className="form-group">
-                    <label>Phông chữ</label>
+                    <label>Font type</label>
                     <CustomSelect
-                      value={selectedLayer.fontFamily}
+                      value={`${selectedLayer.fontWeight}|${selectedLayer.fontStyle || "normal"}`}
                       disabled={!isAdmin}
-                      options={availableFonts.map((font) => ({
-                        value: font,
-                        label: font
-                      }))}
-                      onChange={(nextValue) => updateSelectedLayer({ fontFamily: nextValue })}
+                      options={selectedFontStyleOptions}
+                      onChange={(nextValue) => {
+                        const [fontWeight, fontStyle] = nextValue.split("|");
+                        updateSelectedLayer({
+                          fontWeight: fontWeight || "400",
+                          fontStyle: fontStyle === "italic" ? "italic" : "normal"
+                        });
+                      }}
                     />
                   </div>
                   <div className="form-group">
-                    <label>Màu</label>
-                    <HexColorInput
-                      value={selectedLayer.color}
-                      disabled={!isAdmin}
-                      onChange={(nextValue) => updateSelectedLayer({ color: nextValue })}
-                    />
-                  </div>
-                </div>
-
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Cỡ chữ</label>
+                    <label>Size</label>
                     <input
                       type="number"
                       min={8}
@@ -2725,23 +4118,20 @@ export default function App() {
                       }
                     />
                   </div>
-                  <div className="form-group">
-                    <label>Độ đậm</label>
-                    <CustomSelect
-                      value={selectedLayer.fontWeight}
-                      disabled={!isAdmin}
-                      options={["400", "500", "600", "700", "800"].map((weight) => ({
-                        value: weight,
-                        label: weight
-                      }))}
-                      onChange={(nextValue) => updateSelectedLayer({ fontWeight: nextValue })}
-                    />
-                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label>Màu sắc</label>
+                  <HexColorInput
+                    value={selectedLayer.color}
+                    disabled={!isAdmin}
+                    onChange={(nextValue) => updateSelectedLayer({ color: nextValue })}
+                  />
                 </div>
 
                 <div className="form-row">
                   <div className="form-group">
-                    <label>Rộng</label>
+                    <label>Độ rộng</label>
                     <input
                       type="number"
                       min={80}
@@ -2821,7 +4211,7 @@ export default function App() {
               </div>
             ) : (
               <div className="empty-state">
-                <TextCursorInput size={36} />
+                <TextCursorInput size={26} />
                 <span>Lớp chữ</span>
               </div>
             )}
@@ -2910,21 +4300,6 @@ export default function App() {
               </div>
             </div>
 
-            <div className="admin-tools">
-              <div className="section-label">Quản trị</div>
-              <div className="form-group">
-                <label>Cột khóa</label>
-                <CustomSelect
-                  value={dataset.keyColumn}
-                  disabled={!isAdmin}
-                  options={dataset.columns.map((column) => ({
-                    value: column,
-                    label: column
-                  }))}
-                  onChange={(nextValue) => setKeyColumn(nextValue)}
-                />
-              </div>
-            </div>
           </aside>
         </section>
       </main>
@@ -2963,50 +4338,6 @@ export default function App() {
               </button>
             </div>
           </div>
-        </div>
-      ) : null}
-
-      {showAdminModal ? (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
-          <form className="admin-modal" onSubmit={handleAdminUnlock}>
-            <div className="modal-head">
-              <div className="modal-icon">
-                <Lock size={22} />
-              </div>
-              <button
-                type="button"
-                className="icon-btn"
-                title="Đóng"
-                onClick={() => setShowAdminModal(false)}
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <h2>Mở quản trị</h2>
-            <div className="form-group">
-              <label htmlFor="admin-account-input">Tài khoản</label>
-              <input
-                id="admin-account-input"
-                autoFocus
-                value={adminLoginName}
-                onChange={(event) => setAdminLoginName(event.target.value)}
-              />
-            </div>
-            <div className="form-group">
-              <label htmlFor="admin-code-input">Mật khẩu</label>
-              <input
-                id="admin-code-input"
-                type="password"
-                value={adminCode}
-                onChange={(event) => setAdminCode(event.target.value)}
-              />
-            </div>
-            {adminError ? <div className="form-error">{adminError}</div> : null}
-            <button type="submit" className="btn blue full">
-              <Save size={18} />
-              Mở khóa
-            </button>
-          </form>
         </div>
       ) : null}
 
@@ -3068,7 +4399,7 @@ export default function App() {
       ) : null}
 
       {showDatasetLibraryModal ? (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
+        <div className="library-page-backdrop" role="region" aria-label="Quản lý dữ liệu">
           <div className="admin-modal data-library-modal">
             <div className="modal-head">
               <div className="modal-icon">
@@ -3091,6 +4422,14 @@ export default function App() {
                 <FileSpreadsheet size={18} />
                 Tải lên dữ liệu mới
               </button>
+              <label className="search-control data-library-search">
+                <Search size={18} />
+                <input
+                  value={datasetSearch}
+                  onChange={(event) => setDatasetSearch(event.target.value)}
+                  placeholder="Tìm kiếm dữ liệu"
+                />
+              </label>
               <button
                 type="button"
                 className="btn danger"
@@ -3103,52 +4442,100 @@ export default function App() {
             </div>
 
             <div className="data-library-list">
-              {appState.datasets.map((item) => (
-                <div
-                  key={item.id}
-                  className={
-                    item.id === appState.activeDatasetId
-                      ? "data-library-row active"
-                      : "data-library-row"
-                  }
-                >
-                  <input
-                    type="checkbox"
-                    aria-label={`Chọn ${item.name}`}
-                    checked={selectedDatasetIds.includes(item.id)}
-                    onChange={() => toggleDatasetSelection(item.id)}
-                  />
-                  <div className="data-library-main">
-                    <input
-                      className="data-name-input"
-                      value={item.name}
-                      onChange={(event) => renameDataset(item.id, event.target.value)}
-                      onBlur={(event) => {
-                        if (!event.target.value.trim()) {
-                          renameDataset(item.id, "Dữ liệu chưa đặt tên");
-                        }
-                      }}
-                      title="Bấm vào tên để đổi tên dữ liệu"
-                    />
-                    <div className="data-library-meta">
-                      <span>{item.rows.length} dòng</span>
-                      <span>{item.columns.length} cột</span>
-                      <span>Cột khóa: {item.keyColumn}</span>
-                      <span>
-                        {new Date(item.importedAt).toLocaleDateString("vi-VN")}
-                      </span>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    className={item.id === appState.activeDatasetId ? "btn" : "btn blue"}
-                    disabled={item.id === appState.activeDatasetId}
-                    onClick={() => activateDataset(item.id)}
-                  >
-                    {item.id === appState.activeDatasetId ? "Đang dùng" : "Dùng bộ này"}
-                  </button>
-                </div>
-              ))}
+              <table className="data-library-table">
+                <thead>
+                  <tr>
+                    <th className="data-library-check-col"></th>
+                    <th>Tên dữ liệu</th>
+                    <th>Dòng</th>
+                    <th>Cột</th>
+                    <th>Ngày import</th>
+                    <th>Nguồn</th>
+                    <th className="data-library-actions-col">Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleDatasets.map((item) => (
+                    <tr
+                      key={item.id}
+                      className={item.id === appState.activeDatasetId ? "active" : undefined}
+                    >
+                      <td>
+                        <input
+                          type="checkbox"
+                          aria-label={`Chọn ${item.name}`}
+                          checked={selectedDatasetIds.includes(item.id)}
+                          onChange={() => toggleDatasetSelection(item.id)}
+                        />
+                      </td>
+                      <td>
+                        <input
+                          className="data-name-input"
+                          value={item.name}
+                          onChange={(event) => renameDataset(item.id, event.target.value)}
+                          onBlur={(event) => {
+                            if (!event.target.value.trim()) {
+                              renameDataset(item.id, "Dữ liệu chưa đặt tên");
+                            }
+                          }}
+                          title="Bấm vào tên để đổi tên dữ liệu"
+                        />
+                      </td>
+                      <td>{item.rows.length}</td>
+                      <td>{item.columns.length}</td>
+                      <td>{new Date(item.importedAt).toLocaleDateString("vi-VN")}</td>
+                      <td>
+                        {item.sourceUrl
+                          ? item.sourceKind === "google-sheet"
+                            ? "Google Sheet"
+                            : "File cloud"
+                          : item.sourceKind === "upload"
+                            ? "Dữ liệu đã đọc"
+                            : "Dữ liệu cũ"}
+                      </td>
+                      <td>
+                        <div className="data-library-row-actions">
+                          <button
+                            type="button"
+                            className={
+                              previewDatasetId === item.id
+                                ? "icon-btn data-preview-toggle active"
+                                : "icon-btn data-preview-toggle"
+                            }
+                            title="Xem preview dữ liệu"
+                            aria-label={`Xem preview ${item.name}`}
+                            onClick={() =>
+                              setPreviewDatasetId((current) =>
+                                current === item.id ? null : item.id
+                              )
+                            }
+                          >
+                            <Eye size={18} />
+                          </button>
+                          <button
+                            type="button"
+                            className="icon-btn data-delete-toggle"
+                            title="Xóa dữ liệu"
+                            aria-label={`Xóa ${item.name}`}
+                            onClick={() => deleteDataset(item.id)}
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {!visibleDatasets.length ? (
+                    <tr>
+                      <td className="data-library-empty" colSpan={7}>
+                        {appState.datasets.length
+                          ? "Không tìm thấy dữ liệu phù hợp."
+                          : "Chưa có dữ liệu."}
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
             </div>
 
             {datasetLibraryError ? (
@@ -3158,8 +4545,64 @@ export default function App() {
         </div>
       ) : null}
 
+      {previewDataset ? (
+        <div className="modal-backdrop data-preview-backdrop" role="dialog" aria-modal="true">
+          <div className="admin-modal data-preview-modal">
+            <div className="modal-head">
+              <div className="modal-icon">
+                <FileSpreadsheet size={22} />
+              </div>
+              <button
+                type="button"
+                className="icon-btn"
+                title="Đóng preview"
+                onClick={() => setPreviewDatasetId(null)}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <h2>{previewDataset.name}</h2>
+            <p className="data-preview-subtitle">
+              {previewDataset.rows.length} dòng · {previewDataset.columns.length} cột
+            </p>
+
+            <div className="review-table-wrap data-preview-table-wrap">
+              <table className="review-table">
+                <thead>
+                  <tr>
+                    {previewDataset.columns.map((column) => (
+                      <th key={column}>{column}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {previewDataset.rows.slice(0, 10).map((row, rowIndex) => (
+                    <tr key={`${previewDataset.id}_${rowIndex}`}>
+                      {previewDataset.columns.map((column) => (
+                        <td key={`${previewDataset.id}_${rowIndex}_${column}`}>
+                          {row[column]}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {previewDataset.rows.length > 10 ? (
+              <div className="data-preview-note">Đang hiển thị 10 dòng đầu tiên.</div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
       {showDataImportModal ? (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
+        <div
+          className={isDataImportInline ? "library-page-backdrop data-import-page-backdrop" : "modal-backdrop"}
+          role={isDataImportInline ? "region" : "dialog"}
+          aria-modal={isDataImportInline ? undefined : true}
+          aria-label={isDataImportInline ? "Import dữ liệu" : undefined}
+        >
           <div className="admin-modal data-import-modal">
             <div className="modal-head">
               <div className="modal-icon">
@@ -3244,22 +4687,6 @@ export default function App() {
                   </button>
                 </div>
 
-                <div className="form-group">
-                  <label>Cột khóa mã căn</label>
-                  <CustomSelect
-                    value={pendingDataset.keyColumn}
-                    options={pendingDataset.columns.map((column) => ({
-                      value: column,
-                      label: column
-                    }))}
-                    onChange={(nextValue) =>
-                      setPendingDataset((current) =>
-                        current ? { ...current, keyColumn: nextValue } : current
-                      )
-                    }
-                  />
-                </div>
-
                 <div className="column-review">
                   {pendingDataset.columns.map((column) => (
                     <div key={column} className="review-column-chip">
@@ -3289,21 +4716,29 @@ export default function App() {
                   </table>
                 </div>
 
-                <button type="button" className="btn blue full" onClick={commitPendingDataset}>
+                <button
+                  type="button"
+                  className="btn blue full"
+                  disabled={isUploadingDataset}
+                  onClick={commitPendingDataset}
+                >
                   <FileSpreadsheet size={18} />
-                  Tải lên danh sách
+                  {isUploadingDataset ? "Đang tải file lên cloud..." : "Tải lên danh sách"}
                 </button>
               </>
             )}
 
             {isReadingData ? <div className="import-status">Đang đọc dữ liệu...</div> : null}
+            {isUploadingDataset ? (
+              <div className="import-status">Đang lưu file dữ liệu lên Cloudinary...</div>
+            ) : null}
             {dataImportError ? <div className="form-error">{dataImportError}</div> : null}
           </div>
         </div>
       ) : null}
 
       {showTemplateLibraryModal ? (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
+        <div className="template-library-page-backdrop" role="region" aria-label="Quản lý ảnh mẫu">
           <div className="admin-modal template-library-modal">
             <div className="modal-head">
               <div className="modal-icon">
@@ -3321,129 +4756,359 @@ export default function App() {
 
             <h2>Quản lý ảnh mẫu</h2>
 
-            <div className="template-library-actions">
-              <label className="btn blue">
-                <ImageUp size={18} />
-                Tải ảnh mới
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(event) => {
-                    prepareTemplateUpload(event.target.files?.[0]);
-                    event.target.value = "";
-                  }}
-                />
-              </label>
-              <button
-                type="button"
-                className="btn danger"
-                disabled={!selectedTemplateIds.length}
-                onClick={deleteSelectedTemplates}
-              >
-                <X size={18} />
-                Xóa ảnh đã chọn
-              </button>
-            </div>
-
-            {pendingTemplateUpload ? (
-              <div className="pending-template-card">
-                <img src={pendingTemplateUpload.dataUrl} alt="" />
-                <div className="pending-template-main">
-                  <div className="form-group">
-                    <label>Tên ảnh mới</label>
-                    <input
-                      value={pendingTemplateUpload.name}
-                      onChange={(event) =>
-                        setPendingTemplateUpload((current) =>
-                          current ? { ...current, name: event.target.value } : current
-                        )
-                      }
-                      placeholder="Nhập tên ảnh"
-                    />
-                  </div>
-                  <div className="pending-template-meta">
-                    {pendingTemplateUpload.width} x {pendingTemplateUpload.height}px
-                  </div>
-                  <div className="pending-template-actions">
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={() => setPendingTemplateUpload(null)}
-                    >
-                      Hủy
-                    </button>
-                    <button
-                      type="button"
-                      className="btn blue"
-                      onClick={savePendingTemplateUpload}
-                    >
-                      Lưu ảnh
-                    </button>
-                  </div>
+            <div className="template-library-layout">
+              <aside className="template-folder-pane">
+                <div className="template-folder-head">
+                  <span>Folder</span>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    title="Tạo folder"
+                    onClick={() => createTemplateFolder(null)}
+                  >
+                    <FolderPlus size={17} />
+                  </button>
                 </div>
-              </div>
-            ) : null}
-
-            <div className="template-grid">
-              {appState.templates.map((item) => (
-                <div
-                  key={item.id}
-                  className={
-                    item.id === appState.activeTemplateId
-                      ? "template-card active"
-                      : "template-card"
-                  }
-                >
-                  <div className="template-thumb-wrap">
-                    <input
-                      type="checkbox"
-                      aria-label={`Chọn ${item.name}`}
-                      checked={selectedTemplateIds.includes(item.id)}
-                      onChange={() => toggleTemplateSelection(item.id)}
-                    />
-                    {item.backgroundDataUrl ? (
-                      <img src={item.backgroundDataUrl} alt={item.name} />
-                    ) : (
-                      <div className="blank-image-placeholder" aria-label={`${item.name} chưa có ảnh`} />
-                    )}
-                    <button
-                      type="button"
-                      className="icon-btn preview-template-btn"
-                      title="Preview"
-                      aria-label={`Preview ${item.name}`}
-                      onClick={() => setPreviewTemplate(item)}
+                <div className="template-folder-list">
+                  {flattenedTemplateFolders.map((folder) => (
+                    <div
+                      key={folder.id}
+                      className={
+                        folder.id === activeTemplateFolderId
+                          ? "template-folder-row active"
+                          : "template-folder-row"
+                      }
+                      style={{ paddingLeft: 12 + folder.depth * 16 }}
+                      onClick={() => selectTemplateFolder(folder.id)}
                     >
-                      <Eye size={17} />
-                    </button>
-                    <div className="template-thumb-actions">
+                      <Folder size={16} />
+                      {editingTemplateFolderId === folder.id ? (
+                        <input
+                          value={folder.name}
+                          autoFocus
+                          onClick={(event) => event.stopPropagation()}
+                          onFocus={() => selectTemplateFolder(folder.id)}
+                          onChange={(event) => renameTemplateFolder(folder.id, event.target.value)}
+                          onBlur={(event) =>
+                            finishRenameTemplateFolder(folder.id, event.target.value)
+                          }
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") event.currentTarget.blur();
+                            if (event.key === "Escape") setEditingTemplateFolderId(null);
+                          }}
+                          title="Tên folder"
+                        />
+                      ) : (
+                        <span className="template-folder-name">{folder.name}</span>
+                      )}
+                      <div className="template-folder-menu-wrap">
+                        <button
+                          type="button"
+                          className="template-folder-menu-btn"
+                          title="Tùy chọn folder"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSelectedTemplateFolderId(folder.id);
+                            setOpenTemplateFolderMenuId((current) =>
+                              current === folder.id ? null : folder.id
+                            );
+                          }}
+                        >
+                          <MoreHorizontal size={16} />
+                        </button>
+                        {openTemplateFolderMenuId === folder.id ? (
+                          <div className="template-folder-menu">
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setEditingTemplateFolderId(folder.id);
+                                setOpenTemplateFolderMenuId(null);
+                              }}
+                            >
+                              Sửa tên
+                            </button>
+                            <button
+                              type="button"
+                              className="danger"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                deleteTemplateFolder(folder.id);
+                              }}
+                            >
+                              Xóa folder
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </aside>
+
+              <section className="template-folder-content">
+                <div className="template-current-folder-head">
+                  <div>
+                    <h3>{selectedTemplateFolder?.name || "Folder"}</h3>
+                    <p>
+                      {selectedFolderChildren.length} folder con · {templatesInSelectedFolder.length} ảnh
+                    </p>
+                  </div>
+                  <div className="template-library-actions">
+                    {canCreateSubfolder ? (
                       <button
                         type="button"
-                        className="btn blue import-template-btn"
-                        onClick={() => importTemplateToEditor(item.id)}
+                        className="btn"
+                        onClick={() => createTemplateFolder(activeTemplateFolderId)}
                       >
-                        Thêm
+                        <FolderPlus size={18} />
+                        Tạo folder con
                       </button>
-                    </div>
-                  </div>
-                  <input
-                    className="template-name-input"
-                    value={item.name}
-                    onChange={(event) => renameTemplate(item.id, event.target.value)}
-                    onBlur={(event) => {
-                      if (!event.target.value.trim()) renameTemplate(item.id, "Ảnh chưa đặt tên");
-                    }}
-                    title="Bấm vào tên để đổi tên ảnh"
-                  />
-                  <div className="template-meta">
-                    {item.width} x {item.height}px
+                    ) : null}
+                    <label className={selectedTemplateFolder ? "btn blue" : "btn blue disabled"}>
+                      <ImageUp size={18} />
+                      Tải ảnh vào folder
+                      <input
+                        type="file"
+                        accept="image/*"
+                        disabled={!selectedTemplateFolder}
+                        onChange={(event) => {
+                          prepareTemplateUpload(event.target.files?.[0]);
+                          event.target.value = "";
+                        }}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="btn danger"
+                      disabled={!selectedTemplateIds.length}
+                      onClick={deleteSelectedTemplates}
+                    >
+                      <X size={18} />
+                      Xóa ảnh đã chọn
+                    </button>
                   </div>
                 </div>
-              ))}
+
+                {selectedFolderChildren.length ? (
+                  <div className="folder-chip-grid">
+                    {selectedFolderChildren.map((folder) => (
+                      <button
+                        type="button"
+                        key={folder.id}
+                        className="folder-chip-card"
+                        onClick={() => selectTemplateFolder(folder.id)}
+                      >
+                        <Folder size={18} />
+                        {folder.name}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+
+                {pendingTemplateUpload ? (
+                  <div className="pending-template-card">
+                    <img src={pendingTemplateUpload.dataUrl} alt="" />
+                    <div className="pending-template-main">
+                      <div className="form-group">
+                        <label>Tên ảnh mới</label>
+                        <input
+                          value={pendingTemplateUpload.name}
+                          onChange={(event) =>
+                            setPendingTemplateUpload((current) =>
+                              current ? { ...current, name: event.target.value } : current
+                            )
+                          }
+                          placeholder="Nhập tên ảnh"
+                        />
+                      </div>
+                      <div className="pending-template-meta">
+                        {pendingTemplateUpload.width} x {pendingTemplateUpload.height}px
+                      </div>
+                      <div className="pending-template-actions">
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => setPendingTemplateUpload(null)}
+                        >
+                          Hủy
+                        </button>
+                        <button
+                          type="button"
+                          className="btn blue"
+                          disabled={isUploadingAsset}
+                          onClick={savePendingTemplateUpload}
+                        >
+                          Lưu ảnh
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="template-grid">
+                  {templatesInSelectedFolder.map((item) => (
+                    <div
+                      key={item.id}
+                      className={
+                        item.id === appState.activeTemplateId
+                          ? "template-card active"
+                          : "template-card"
+                      }
+                    >
+                      <div className="template-thumb-wrap">
+                        <input
+                          type="checkbox"
+                          aria-label={`Chọn ${item.name}`}
+                          checked={selectedTemplateIds.includes(item.id)}
+                          onChange={() => toggleTemplateSelection(item.id)}
+                        />
+                        {getTemplateLibraryImage(item) ? (
+                          <img src={getTemplateLibraryImage(item)} alt={item.name} />
+                        ) : (
+                          <div className="blank-image-placeholder" aria-label={`${item.name} chưa có ảnh`} />
+                        )}
+                        <button
+                          type="button"
+                          className="icon-btn preview-template-btn"
+                          title="Preview"
+                          aria-label={`Preview ${item.name}`}
+                          onClick={() => setPreviewTemplate(item)}
+                        >
+                          <Eye size={17} />
+                        </button>
+                      </div>
+                      <input
+                        className="template-name-input"
+                        value={item.name}
+                        onChange={(event) => renameTemplateImage(item.id, event.target.value)}
+                        onBlur={(event) => {
+                          if (!event.target.value.trim()) renameTemplateImage(item.id, "Ảnh chưa đặt tên");
+                        }}
+                        title="Bấm vào tên để đổi tên ảnh"
+                      />
+                      <div className="template-meta">
+                        {item.width} x {item.height}px
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
             </div>
 
             {templateLibraryError ? (
               <div className="form-error">{templateLibraryError}</div>
             ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {showTemplatePickerModal ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="admin-modal template-library-modal template-picker-modal">
+            <div className="modal-head">
+              <div className="modal-icon">
+                <ImageUp size={22} />
+              </div>
+              <button
+                type="button"
+                className="icon-btn"
+                title="Đóng"
+                onClick={closeTemplatePickerModal}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <h2>Chọn ảnh</h2>
+
+            <div className="template-library-layout">
+              <aside className="template-folder-pane">
+                <div className="template-folder-head">
+                  <span>Folder</span>
+                </div>
+                <div className="template-folder-list">
+                  {flattenedTemplateFolders.map((folder) => (
+                    <button
+                      type="button"
+                      key={folder.id}
+                      className={
+                        folder.id === activePickerFolderId
+                          ? "template-folder-row active picker"
+                          : "template-folder-row picker"
+                      }
+                      style={{ paddingLeft: 12 + folder.depth * 16 }}
+                      onClick={() => {
+                        setSelectedPickerFolderId(folder.id);
+                        setSelectedPickerTemplateId(null);
+                      }}
+                    >
+                      <Folder size={16} />
+                      <span>{folder.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </aside>
+
+              <section className="template-folder-content">
+                <div className="template-current-folder-head">
+                  <div>
+                    <h3>
+                      {appState.templateFolders.find((folder) => folder.id === activePickerFolderId)
+                        ?.name || "Folder"}
+                    </h3>
+                    <p>{templatesInPickerFolder.length} ảnh</p>
+                  </div>
+                </div>
+
+                <div className="template-grid">
+                  {templatesInPickerFolder.map((item) => (
+                    <button
+                      type="button"
+                      key={item.id}
+                      className={
+                        item.id === selectedPickerTemplateId
+                          ? "template-card picker-card active"
+                          : "template-card picker-card"
+                      }
+                      disabled={!getTemplateLibraryImage(item)}
+                      onClick={() => setSelectedPickerTemplateId(item.id)}
+                    >
+                      <div className="template-thumb-wrap">
+                        {getTemplateLibraryImage(item) ? (
+                          <img src={getTemplateLibraryImage(item)} alt={item.name} />
+                        ) : (
+                          <div className="blank-image-placeholder" aria-label={`${item.name} chưa có ảnh`} />
+                        )}
+                      </div>
+                      <div className="template-picker-name">{item.name}</div>
+                      <div className="template-meta">
+                        {item.width} x {item.height}px
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            </div>
+
+            <div className="template-picker-footer">
+              <div className="template-picker-selected">
+                {selectedPickerTemplate ? selectedPickerTemplate.name : "Chưa chọn ảnh"}
+              </div>
+              <button
+                type="button"
+                className="btn blue"
+                disabled={!selectedPickerTemplate || !getTemplateLibraryImage(selectedPickerTemplate)}
+                onClick={() =>
+                  selectedPickerTemplate
+                    ? applyTemplateImageToCurrentTemplate(selectedPickerTemplate.id)
+                    : undefined
+                }
+              >
+                <ImageUp size={18} />
+                Import
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
@@ -3468,8 +5133,8 @@ export default function App() {
               </button>
             </div>
             <div className="template-preview-frame">
-              {previewTemplate.backgroundDataUrl ? (
-                <img src={previewTemplate.backgroundDataUrl} alt={previewTemplate.name} />
+              {getTemplateLibraryImage(previewTemplate) ? (
+                <img src={getTemplateLibraryImage(previewTemplate)} alt={previewTemplate.name} />
               ) : (
                 <div className="blank-preview-placeholder">Chưa có ảnh</div>
               )}
@@ -3482,20 +5147,13 @@ export default function App() {
               >
                 Đóng
               </button>
-              <button
-                type="button"
-                className="btn blue"
-                onClick={() => importTemplateToEditor(previewTemplate.id)}
-              >
-                Thêm
-              </button>
             </div>
           </div>
         </div>
       ) : null}
 
       {showFontLibraryModal ? (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
+        <div className="library-page-backdrop" role="region" aria-label="Quản lý phông chữ">
           <div className="admin-modal font-library-modal">
             <div className="modal-head">
               <div className="modal-icon">
@@ -3519,9 +5177,10 @@ export default function App() {
                 Thêm font mới
                 <input
                   type="file"
+                  multiple
                   accept=".woff,.woff2,.ttf,.otf"
                   onChange={(event) => {
-                    handleFontUpload(event.target.files?.[0]);
+                    handleFontUpload(event.target.files);
                     event.target.value = "";
                   }}
                 />
@@ -3565,7 +5224,7 @@ export default function App() {
               <div className="font-empty-state">
                 <Type size={36} />
                 <strong>Chưa có font tải lên</strong>
-                <span>Bấm “Thêm font mới” để tải `.woff`, `.woff2`, `.ttf`, `.otf`.</span>
+                <span>Bấm “Thêm font mới” để tải một hoặc nhiều file `.woff`, `.woff2`, `.ttf`, `.otf`.</span>
               </div>
             )}
 
