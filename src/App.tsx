@@ -916,110 +916,15 @@ function getTemplateLibraryImage(item: TemplateImage | Template) {
 }
 
 function createInitialState(): AppState {
-  const dataset: Dataset = {
-    id: "dataset_sample",
-    name: "Danh sách căn mẫu",
-    columns: ["mã căn", "dự án", "tòa", "tầng", "loại căn", "diện tích", "hướng", "giá bán"],
-    rows: [
-      {
-        "mã căn": "S2.1512",
-        "dự án": "The Global City",
-        "tòa": "S2",
-        "tầng": "15",
-        "loại căn": "2PN+",
-        "diện tích": "72.5 m2",
-        "hướng": "Đông Nam",
-        "giá bán": "7.8 tỷ"
-      },
-      {
-        "mã căn": "G3.2408",
-        "dự án": "Masteri Waterfront",
-        "tòa": "G3",
-        "tầng": "24",
-        "loại căn": "3PN",
-        "diện tích": "91.2 m2",
-        "hướng": "Tây Bắc",
-        "giá bán": "9.6 tỷ"
-      }
-    ],
-    keyColumn: "mã căn",
-    importedAt: new Date().toISOString()
-  };
-
   const template: Template = {
     id: "template_default",
-    name: "Ảnh mẫu OneHousing",
+    name: "Page 1",
     folderId: DEFAULT_TEMPLATE_FOLDER_ID,
     width: 1080,
     height: 1350,
-    backgroundDataUrl: defaultTemplateImage(),
+    backgroundDataUrl: "",
     updatedAt: new Date().toISOString(),
-    layers: [
-      {
-        id: "layer_code",
-        name: "Mã căn",
-        column: "mã căn",
-        x: 130,
-        y: 918,
-        width: 400,
-        fontFamily: "Be Vietnam Pro",
-        fontSize: 72,
-        fontWeight: "800",
-        color: "#071025",
-        align: "left",
-        lineHeight: 1.08,
-        letterSpacing: 0,
-        textTransform: "uppercase"
-      },
-      {
-        id: "layer_project",
-        name: "Dự án",
-        column: "dự án",
-        x: 130,
-        y: 1006,
-        width: 760,
-        fontFamily: "Be Vietnam Pro",
-        fontSize: 34,
-        fontWeight: "700",
-        color: "#256fe6",
-        align: "left",
-        lineHeight: 1.18,
-        letterSpacing: 0,
-        textTransform: "none"
-      },
-      {
-        id: "layer_area",
-        name: "Diện tích",
-        column: "diện tích",
-        x: 130,
-        y: 1134,
-        width: 260,
-        fontFamily: "Be Vietnam Pro",
-        fontSize: 36,
-        fontWeight: "800",
-        color: "#071025",
-        align: "left",
-        lineHeight: 1.12,
-        letterSpacing: 0,
-        textTransform: "none"
-      },
-      {
-        id: "layer_price",
-        name: "Giá bán",
-        column: "giá bán",
-        x: 620,
-        y: 1134,
-        width: 330,
-        fontFamily: "Be Vietnam Pro",
-        fontSize: 42,
-        fontWeight: "800",
-        color: "#3b6d11",
-        align: "right",
-        lineHeight: 1.12,
-        letterSpacing: 0,
-        textTransform: "none"
-      }
-    ]
+    layers: []
   };
 
   return {
@@ -1031,26 +936,44 @@ function createInitialState(): AppState {
         createdAt: new Date().toISOString()
       }
     ],
-    templateImages: [
-      {
-        id: "image_default",
-        name: "Ảnh mẫu OneHousing",
-        folderId: DEFAULT_TEMPLATE_FOLDER_ID,
-        width: 1080,
-        height: 1350,
-        dataUrl: defaultTemplateImage(),
-        createdAt: new Date().toISOString()
-      }
-    ],
+    templateImages: [],
     templates: [template],
     activeTemplateId: template.id,
-    datasets: [dataset],
+    datasets: [],
     activeDatasetId: "",
     customFonts: []
   };
 }
 
+function isLegacyDefaultAppState(parsed: Partial<AppState> | null | undefined) {
+  const template = parsed?.templates?.[0];
+  const templateImages = parsed?.templateImages || [];
+  const datasets = parsed?.datasets || [];
+  if (!template || parsed?.templates?.length !== 1) return false;
+  const hasLegacyDefaultTemplate =
+    template.id === "template_default" &&
+    template.name === "Ảnh mẫu OneHousing" &&
+    template.backgroundDataUrl === defaultTemplateImage() &&
+    Array.isArray(template.layers) &&
+    template.layers.length === 4 &&
+    template.layers.every((layer) =>
+      ["layer_code", "layer_project", "layer_area", "layer_price"].includes(layer.id)
+    );
+  const hasOnlyLegacyLibraryImage =
+    !templateImages.length ||
+    (templateImages.length === 1 &&
+      templateImages[0]?.id === "image_default" &&
+      templateImages[0]?.dataUrl === defaultTemplateImage());
+  const hasOnlyLegacySampleDataset =
+    !datasets.length ||
+    (datasets.length === 1 && datasets[0]?.id === "dataset_sample");
+  return hasLegacyDefaultTemplate && hasOnlyLegacyLibraryImage && hasOnlyLegacySampleDataset;
+}
+
 function normalizeAppState(parsed: Partial<AppState> | null | undefined): AppState {
+  if (isLegacyDefaultAppState(parsed)) {
+    return createInitialState();
+  }
   if (!parsed || !Array.isArray(parsed.templates) || !parsed.templates.length) {
     return createInitialState();
   }
