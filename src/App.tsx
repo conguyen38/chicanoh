@@ -1,10 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import Konva from "konva";
 import {
   Stage,
   Layer,
   Image as KonvaImage,
+  Line,
   Rect,
   Text as KonvaText,
   Transformer
@@ -59,7 +61,8 @@ type RowData = Record<string, string>;
 
 type CanvasTool = "move" | "hand" | "text";
 type DesignPanel = "elements" | "images" | "text";
-type ShapeVariant = "frame" | "rect" | "circle";
+type ShapeVariant = "frame" | "rect" | "circle" | "image";
+type ImageUsage = "frame-fill" | "standalone";
 
 type InlineTextEditor = {
   layerId: string;
@@ -117,6 +120,7 @@ type TextLayer = {
   opacity?: number;
   imageDataUrl?: string;
   imageName?: string;
+  imageUsage?: ImageUsage;
   align: "left" | "center" | "right";
   lineHeight: number;
   letterSpacing: number;
@@ -129,6 +133,12 @@ type LayerBounds = {
   y: number;
   width: number;
   height: number;
+};
+
+type AlignmentGuide = {
+  id: string;
+  orientation: "horizontal" | "vertical";
+  points: [number, number, number, number];
 };
 
 type Template = {
@@ -667,11 +677,38 @@ const DEFAULT_TEMPLATE_FOLDER_ID = "folder_default";
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 0.15;
+const GUIDE_SNAP_THRESHOLD = 6;
+const GUIDE_EXTENSION = 18;
 const HISTORY_LIMIT = 80;
 const DEFAULT_ADDED_TEXT_FONT_SIZE = 24;
 const ADMIN_IDLE_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1000;
 
 const BASE_FONTS = ["Be Vietnam Pro", "Arial", "Inter", "Georgia", "Times New Roman"];
+const DEFAULT_FRAME_PLACEHOLDER_SVG = `
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600" viewBox="0 0 600 600">
+  <defs>
+    <linearGradient id="sky" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#bfeeff"/>
+      <stop offset="1" stop-color="#f4fbff"/>
+    </linearGradient>
+    <linearGradient id="farHill" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#d6ec8c"/>
+      <stop offset="1" stop-color="#bde679"/>
+    </linearGradient>
+    <linearGradient id="nearHill" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#94c700"/>
+      <stop offset="1" stop-color="#79ad00"/>
+    </linearGradient>
+  </defs>
+  <rect width="600" height="600" fill="url(#sky)"/>
+  <path d="M0 408 C90 392 144 418 236 425 C315 431 350 411 424 432 C493 451 538 457 600 448 L600 600 L0 600 Z" fill="url(#farHill)"/>
+  <path d="M0 493 C94 508 163 478 244 460 C334 440 387 465 468 468 C518 470 558 463 600 458 L600 600 L0 600 Z" fill="url(#nearHill)"/>
+  <circle cx="292" cy="154" r="64" fill="#ffffff"/>
+  <circle cx="212" cy="194" r="49" fill="#ffffff"/>
+  <circle cx="385" cy="202" r="36" fill="#ffffff"/>
+  <rect x="206" y="180" width="210" height="70" rx="35" fill="#ffffff"/>
+</svg>`;
+const DEFAULT_FRAME_PLACEHOLDER_DATA_URL = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(DEFAULT_FRAME_PLACEHOLDER_SVG)}`;
 
 function uid(prefix: string) {
   return `${prefix}_${Math.random().toString(36).slice(2, 8)}_${Date.now().toString(36)}`;
@@ -917,6 +954,15 @@ function isShapeLayer(layer: TextLayer | null | undefined): layer is TextLayer &
   return layer?.kind === "shape";
 }
 
+function isStandaloneImageLayer(layer: TextLayer | null | undefined) {
+  if (!isShapeLayer(layer)) return false;
+  if (layer.shapeVariant === "image") return true;
+  if (layer.imageUsage === "standalone") return true;
+  if (layer.imageUsage === "frame-fill") return false;
+  if (!layer.imageDataUrl) return false;
+  return layer.id.startsWith("frame_");
+}
+
 function fontInfoFromFileName(fileName: string) {
   const baseName = cleanFontFamily(fileName);
   const nameWithoutVariableSuffix = baseName.replace(/-?VariableFont.*$/i, "");
@@ -1006,18 +1052,40 @@ function normalizeLayer(layer: Partial<TextLayer> | null | undefined, index = 0)
       : kind === "shape"
         ? "#8b3dff"
         : undefined;
+  const normalizedShapeVariant =
+    layer?.shapeVariant === "frame" ||
+    layer?.shapeVariant === "circle" ||
+    layer?.shapeVariant === "rect" ||
+    layer?.shapeVariant === "image"
+      ? layer.shapeVariant
+      : kind === "shape"
+        ? "rect"
+        : undefined;
+  const normalizedImageDataUrl =
+    kind === "shape" && typeof layer?.imageDataUrl === "string"
+      ? layer.imageDataUrl
+      : undefined;
+  const normalizedImageUsage =
+    normalizedImageDataUrl && (layer?.imageUsage === "standalone" || normalizedShapeVariant === "image")
+      ? "standalone"
+      : normalizedImageDataUrl && layer?.imageUsage === "frame-fill"
+        ? "frame-fill"
+      : normalizedImageDataUrl
+        ? typeof layer?.id === "string" && layer.id.startsWith("frame_")
+          ? "standalone"
+          : "frame-fill"
+        : undefined;
+  const outputShapeVariant =
+    normalizedImageUsage === "standalone"
+      ? "image"
+      : normalizedShapeVariant === "image" && !normalizedImageDataUrl
+        ? "frame"
+        : normalizedShapeVariant;
   return {
     ...FALLBACK_TEXT_LAYER,
     ...layer,
     kind,
-    shapeVariant:
-      layer?.shapeVariant === "frame" ||
-      layer?.shapeVariant === "circle" ||
-      layer?.shapeVariant === "rect"
-        ? layer.shapeVariant
-        : kind === "shape"
-          ? "rect"
-          : undefined,
+    shapeVariant: outputShapeVariant,
     id: typeof layer?.id === "string" && layer.id ? layer.id : uid("layer"),
     name: typeof layer?.name === "string" && layer.name ? layer.name : `Lớp chữ ${index + 1}`,
     column: kind === "shape" ? "" : typeof layer?.column === "string" ? layer.column : "",
@@ -1057,14 +1125,12 @@ function normalizeLayer(layer: Partial<TextLayer> | null | undefined, index = 0)
     opacity: Number.isFinite(Number(layer?.opacity))
       ? Math.min(1, Math.max(0.05, Number(layer?.opacity)))
       : 1,
-    imageDataUrl:
-      kind === "shape" && typeof layer?.imageDataUrl === "string"
-        ? layer.imageDataUrl
-        : undefined,
+    imageDataUrl: normalizedImageDataUrl,
     imageName:
       kind === "shape" && typeof layer?.imageName === "string"
         ? layer.imageName
         : undefined,
+    imageUsage: normalizedImageUsage,
     align: align === "center" || align === "right" || align === "left" ? align : "left",
     lineHeight: normalizePositiveNumber(layer?.lineHeight, FALLBACK_TEXT_LAYER.lineHeight),
     letterSpacing: Number.isFinite(Number(layer?.letterSpacing))
@@ -1530,9 +1596,13 @@ function ShapeLayerNode({
   setNode
 }: ShapeLayerNodeProps) {
   const image = useImage(layer.imageDataUrl || "");
+  const framePlaceholderImage = useImage(
+    layer.shapeVariant === "frame" && !layer.imageDataUrl ? DEFAULT_FRAME_PLACEHOLDER_DATA_URL : ""
+  );
   const width = layer.width;
   const height = layer.height || layer.width;
-  const crop = getCoverCrop(image, width, height);
+  const renderedImage = image || framePlaceholderImage;
+  const crop = getCoverCrop(renderedImage, width, height);
   const cornerRadius =
     layer.shapeVariant === "circle"
       ? Math.min(width, height) / 2
@@ -1553,12 +1623,12 @@ function ShapeLayerNode({
     onTransformEnd
   };
 
-  if (image) {
+  if (renderedImage) {
     return (
       <KonvaImage
         {...commonProps}
         ref={(node) => setNode(node)}
-        image={image}
+        image={renderedImage}
         crop={crop}
         cornerRadius={cornerRadius}
         stroke={layer.stroke}
@@ -1647,6 +1717,8 @@ export default function App() {
   const [storageWarning, setStorageWarning] = useState("");
   const [downloadToast, setDownloadToast] = useState("");
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
+  const [showPageSizeMenu, setShowPageSizeMenu] = useState(false);
+  const [pageSizeDraft, setPageSizeDraft] = useState({ width: "", height: "" });
   const [cloudSync, setCloudSync] = useState<CloudSyncState>({
     status: "loading",
     message: "Đang kết nối cloud..."
@@ -1667,6 +1739,7 @@ export default function App() {
     width: 0,
     height: 0
   });
+  const [alignmentGuides, setAlignmentGuides] = useState<AlignmentGuide[]>([]);
 
   const stageRef = useRef<Konva.Stage>(null);
   const transformerRef = useRef<Konva.Transformer>(null);
@@ -1675,6 +1748,7 @@ export default function App() {
   const inlineTextEditorRef = useRef<HTMLTextAreaElement>(null);
   const settingsMenuRef = useRef<HTMLDivElement>(null);
   const downloadMenuRef = useRef<HTMLDivElement>(null);
+  const pageSizeMenuRef = useRef<HTMLDivElement>(null);
   const shapeWidthInputRef = useRef<HTMLInputElement>(null);
   const shapeHeightInputRef = useRef<HTMLInputElement>(null);
   const shapeRadiusInputRef = useRef<HTMLInputElement>(null);
@@ -1839,6 +1913,7 @@ export default function App() {
   const selectedLayer = selectedLayers[0] || null;
   const hasMultiSelection = selectedLayers.length > 1;
   const selectedLayerIsShape = isShapeLayer(selectedLayer);
+  const selectedLayerIsStandaloneImage = isStandaloneImageLayer(selectedLayer);
   const selectionHasShape = selectedLayers.some((layer) => isShapeLayer(layer));
   const selectedShapeWidth = Math.round(selectedLayer?.width ?? 0);
   const selectedShapeHeight = Math.round(selectedLayer?.height ?? selectedLayer?.width ?? 0);
@@ -1848,12 +1923,20 @@ export default function App() {
       : selectedLayer?.cornerRadius || 0
   );
   const selectedFontStyleOptions = useMemo(() => {
-    const baseOptions = ["100", "200", "300", "400", "500", "600", "700", "800", "900"].map(
-      (weight) => ({
-        value: `${weight}|normal`,
-        label: weight
-      })
-    );
+    const baseOptions = [
+      ["100", "Thin 100"],
+      ["200", "Extra Light 200"],
+      ["300", "Light 300"],
+      ["400", "Regular 400"],
+      ["500", "Medium 500"],
+      ["600", "Semi Bold 600"],
+      ["700", "Bold 700"],
+      ["800", "Extra Bold 800"],
+      ["900", "Black 900"]
+    ].map(([weight, label]) => ({
+      value: `${weight}|normal`,
+      label
+    }));
     if (!selectedLayer) return baseOptions;
     const customOptions = appState.customFonts
       .filter((font) => font.family === selectedLayer.fontFamily)
@@ -1870,6 +1953,9 @@ export default function App() {
       ? options
       : [{ value: selectedValue, label: selectedValue.replace("|", " ") }, ...options];
   }, [appState.customFonts, selectedLayer]);
+  const selectedFontStyleValue = selectedLayer
+    ? `${selectedLayer.fontWeight}|${selectedLayer.fontStyle || "normal"}`
+    : "";
   const canUndo = historyVersion >= 0 && undoStackRef.current.length > 0;
   const canRedo = historyVersion >= 0 && redoStackRef.current.length > 0;
   const selectedOutlineColor = selectionHasShape
@@ -1883,7 +1969,7 @@ export default function App() {
     new Set([...BASE_FONTS, ...appState.customFonts.map((font) => font.family)])
   );
   const canEditWorkspace = true;
-  const canAddTextLayer = canEditWorkspace;
+  const canAddTextLayer = canEditWorkspace && isAdmin;
   const uploadedFontGroups = useMemo(() => {
     const groups = new Map<
       string,
@@ -2226,6 +2312,31 @@ export default function App() {
   }, [showDownloadMenu]);
 
   useEffect(() => {
+    if (!showPageSizeMenu) return;
+    setPageSizeDraft({
+      width: String(template.width),
+      height: String(template.height)
+    });
+  }, [showPageSizeMenu, template.id, template.width, template.height]);
+
+  useEffect(() => {
+    if (!showPageSizeMenu) return;
+    function closeOnOutsidePointer(event: PointerEvent) {
+      if (pageSizeMenuRef.current?.contains(event.target as Node | null)) return;
+      setShowPageSizeMenu(false);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setShowPageSizeMenu(false);
+    }
+    window.addEventListener("pointerdown", closeOnOutsidePointer);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeOnOutsidePointer);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [showPageSizeMenu]);
+
+  useEffect(() => {
     if (!isAdmin) return;
 
     function handleAdminActivity() {
@@ -2288,7 +2399,6 @@ export default function App() {
       const selectedIds = selectedLayerIdsRef.current;
       if (
         (event.key === "Backspace" || event.key === "Delete") &&
-        isAdminRef.current &&
         selectedIds.length
       ) {
         event.preventDefault();
@@ -2384,6 +2494,65 @@ export default function App() {
     }));
   }
 
+  function beginToolbarNumberScrub(
+    event: ReactPointerEvent<HTMLElement>,
+    options: {
+      value: number;
+      min?: number;
+      max?: number;
+      step?: number;
+      pixelsPerStep?: number;
+      onChange: (nextValue: number) => void;
+    }
+  ) {
+    if (!canEditWorkspace || event.button !== 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const {
+      value,
+      min = Number.NEGATIVE_INFINITY,
+      max = Number.POSITIVE_INFINITY,
+      step = 1,
+      pixelsPerStep = 4,
+      onChange
+    } = options;
+    const startX = event.clientX;
+    const startValue = Number.isFinite(value) ? value : 0;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    let latestValue = startValue;
+
+    document.body.style.cursor = "ew-resize";
+    document.body.style.userSelect = "none";
+
+    const stepPrecision = Math.max(0, (step.toString().split(".")[1] || "").length);
+    const clampValue = (nextValue: number) => Math.min(max, Math.max(min, nextValue));
+    const normalizeValue = (nextValue: number) =>
+      Number(clampValue(nextValue).toFixed(stepPrecision));
+
+    const handlePointerMove = (pointerEvent: PointerEvent) => {
+      const stepDelta = Math.round((pointerEvent.clientX - startX) / pixelsPerStep);
+      const nextValue = normalizeValue(startValue + stepDelta * step);
+      if (nextValue === latestValue) return;
+      latestValue = nextValue;
+      onChange(nextValue);
+    };
+
+    const finishScrub = () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", finishScrub);
+      window.removeEventListener("pointercancel", finishScrub);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", finishScrub);
+    window.addEventListener("pointercancel", finishScrub);
+  }
+
   function beginInlineFreeTextEdit(
     layer: TextLayer,
     event: Konva.KonvaEventObject<MouseEvent | TouchEvent>
@@ -2421,33 +2590,35 @@ export default function App() {
     setInlineTextEditor(null);
   }
 
-  function getSelectedLayerBounds() {
-    return selectedLayers.map((layer) => {
-      const node = layerRefs.current[layer.id];
-      if (node) {
-        const parentLayer = node.getLayer();
-        const rect = parentLayer
-          ? node.getClientRect({ relativeTo: parentLayer })
-          : node.getClientRect();
-        return {
-          id: layer.id,
-          x: rect.x,
-          y: rect.y,
-          width: rect.width,
-          height: rect.height
-        };
-      }
-
+  function getLayerBounds(layer: TextLayer): LayerBounds {
+    const node = layerRefs.current[layer.id];
+    if (node) {
+      const parentLayer = node.getLayer();
+      const rect = parentLayer
+        ? node.getClientRect({ relativeTo: parentLayer })
+        : node.getClientRect();
       return {
         id: layer.id,
-        x: layer.x,
-        y: layer.y,
-        width: layer.width,
-        height: isShapeLayer(layer)
-          ? layer.height || layer.width
-          : Math.max(layer.fontSize, layer.fontSize * layer.lineHeight)
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height
       };
-    });
+    }
+
+    return {
+      id: layer.id,
+      x: layer.x,
+      y: layer.y,
+      width: layer.width,
+      height: isShapeLayer(layer)
+        ? layer.height || layer.width
+        : Math.max(layer.fontSize, layer.fontSize * layer.lineHeight)
+    };
+  }
+
+  function getSelectedLayerBounds() {
+    return selectedLayers.map(getLayerBounds);
   }
 
   function getBoundsUnion(bounds: LayerBounds[]) {
@@ -2461,6 +2632,182 @@ export default function App() {
       width: right - left,
       height: bottom - top
     };
+  }
+
+  function getMovingLayerIds(activeLayerId: string) {
+    const groupDrag = groupDragRef.current;
+    if (groupDrag?.activeLayerId === activeLayerId) {
+      return selectedLayerIds.filter((id) => layerRefs.current[id]);
+    }
+    return [activeLayerId];
+  }
+
+  function getAlignmentSnap(movingIds: string[]) {
+    const movingIdSet = new Set(movingIds);
+    const movingBounds = template.layers
+      .filter((layer) => movingIdSet.has(layer.id))
+      .map(getLayerBounds);
+    const targetBounds = template.layers
+      .filter((layer) => !movingIdSet.has(layer.id))
+      .map(getLayerBounds);
+
+    if (!movingBounds.length) {
+      return { deltaX: 0, deltaY: 0, guides: [] as AlignmentGuide[] };
+    }
+
+    const moving = getBoundsUnion(movingBounds);
+    const threshold = GUIDE_SNAP_THRESHOLD / stageScale;
+    const movingXPoints = [
+      moving.x,
+      moving.x + moving.width / 2,
+      moving.x + moving.width
+    ];
+    const movingYPoints = [
+      moving.y,
+      moving.y + moving.height / 2,
+      moving.y + moving.height
+    ];
+    type AlignmentMatch = {
+      distance: number;
+      offset: number;
+      value: number;
+      target?: LayerBounds;
+      isCanvasCenter?: boolean;
+    };
+    let bestX: AlignmentMatch | null = null;
+    let bestY: AlignmentMatch | null = null;
+
+    targetBounds.forEach((target) => {
+      const targetXPoints = [
+        target.x,
+        target.x + target.width / 2,
+        target.x + target.width
+      ];
+      const targetYPoints = [
+        target.y,
+        target.y + target.height / 2,
+        target.y + target.height
+      ];
+
+      targetXPoints.forEach((targetX) => {
+        movingXPoints.forEach((movingX) => {
+          const offset = targetX - movingX;
+          const distance = Math.abs(offset);
+          if (distance <= threshold && (!bestX || distance < bestX.distance)) {
+            bestX = { distance, offset, value: targetX, target };
+          }
+        });
+      });
+
+      targetYPoints.forEach((targetY) => {
+        movingYPoints.forEach((movingY) => {
+          const offset = targetY - movingY;
+          const distance = Math.abs(offset);
+          if (distance <= threshold && (!bestY || distance < bestY.distance)) {
+            bestY = { distance, offset, value: targetY, target };
+          }
+        });
+      });
+    });
+
+    const canvasCenterX = template.width / 2;
+    const canvasCenterY = template.height / 2;
+    const movingCenterX = moving.x + moving.width / 2;
+    const movingCenterY = moving.y + moving.height / 2;
+    const canvasCenterXOffset = canvasCenterX - movingCenterX;
+    const canvasCenterYOffset = canvasCenterY - movingCenterY;
+    const canvasCenterXDistance = Math.abs(canvasCenterXOffset);
+    const canvasCenterYDistance = Math.abs(canvasCenterYOffset);
+    const currentBestX = bestX as AlignmentMatch | null;
+    const currentBestY = bestY as AlignmentMatch | null;
+
+    if (canvasCenterXDistance <= threshold && (!currentBestX || canvasCenterXDistance < currentBestX.distance)) {
+      bestX = {
+        distance: canvasCenterXDistance,
+        offset: canvasCenterXOffset,
+        value: canvasCenterX,
+        isCanvasCenter: true
+      };
+    }
+
+    if (canvasCenterYDistance <= threshold && (!currentBestY || canvasCenterYDistance < currentBestY.distance)) {
+      bestY = {
+        distance: canvasCenterYDistance,
+        offset: canvasCenterYOffset,
+        value: canvasCenterY,
+        isCanvasCenter: true
+      };
+    }
+
+    const matchedX = bestX as AlignmentMatch | null;
+    const matchedY = bestY as AlignmentMatch | null;
+    const deltaX = matchedX?.offset || 0;
+    const deltaY = matchedY?.offset || 0;
+    const snappedMoving = {
+      ...moving,
+      x: moving.x + deltaX,
+      y: moving.y + deltaY
+    };
+    const extension = GUIDE_EXTENSION / stageScale;
+    const guides: AlignmentGuide[] = [];
+
+    if (matchedX) {
+      const y1 = matchedX.target
+        ? Math.max(0, Math.min(matchedX.target.y, snappedMoving.y) - extension)
+        : 0;
+      const y2 = matchedX.target
+        ? Math.min(
+            template.height,
+            Math.max(matchedX.target.y + matchedX.target.height, snappedMoving.y + snappedMoving.height) +
+              extension
+          )
+        : template.height;
+      guides.push({
+        id: matchedX.isCanvasCenter ? "vertical-canvas-center" : `vertical-${matchedX.target?.id}`,
+        orientation: "vertical",
+        points: [matchedX.value, y1, matchedX.value, y2]
+      });
+    }
+
+    if (matchedY) {
+      const x1 = matchedY.target
+        ? Math.max(0, Math.min(matchedY.target.x, snappedMoving.x) - extension)
+        : 0;
+      const x2 = matchedY.target
+        ? Math.min(
+            template.width,
+            Math.max(matchedY.target.x + matchedY.target.width, snappedMoving.x + snappedMoving.width) +
+              extension
+          )
+        : template.width;
+      guides.push({
+        id: matchedY.isCanvasCenter ? "horizontal-canvas-center" : `horizontal-${matchedY.target?.id}`,
+        orientation: "horizontal",
+        points: [x1, matchedY.value, x2, matchedY.value]
+      });
+    }
+
+    return { deltaX, deltaY, guides };
+  }
+
+  function updateAlignmentGuidesForDrag(activeLayerId: string) {
+    const movingIds = getMovingLayerIds(activeLayerId);
+    const { deltaX, deltaY, guides } = getAlignmentSnap(movingIds);
+
+    if (deltaX || deltaY) {
+      movingIds.forEach((id) => {
+        const node = layerRefs.current[id];
+        if (node) {
+          node.position({
+            x: node.x() + deltaX,
+            y: node.y() + deltaY
+          });
+        }
+      });
+    }
+
+    setAlignmentGuides(guides);
+    transformerRef.current?.forceUpdate();
   }
 
   function applyLayerPositions(positions: Record<string, { x: number; y: number }>) {
@@ -2584,7 +2931,7 @@ export default function App() {
   }
 
   function addTextLayer(column: string, x = 120, y = 120) {
-    if (!column || !canEditWorkspace) return;
+    if (!column || !canAddTextLayer) return;
     const layer: TextLayer = {
       id: uid("layer"),
       name: column,
@@ -2610,7 +2957,7 @@ export default function App() {
   }
 
   function addFreeTextLayer(x = 120, y = 120, content = "Text", fontSize = DEFAULT_ADDED_TEXT_FONT_SIZE) {
-    if (!canEditWorkspace) return;
+    if (!canAddTextLayer) return;
     const layer: TextLayer = {
       id: uid("layer"),
       name: content.trim() || "Free text",
@@ -2684,15 +3031,17 @@ export default function App() {
   function placeImageInFrame(
     image: TemplateImage,
     targetLayerId?: string,
-    dropPoint?: { x: number; y: number }
+    dropPoint?: { x: number; y: number },
+    useSelectedFrame = true
   ) {
     const dataUrl = getTemplateLibraryImage(image);
     if (!dataUrl || !canEditWorkspace) return;
     const targetFrame =
       (targetLayerId
         ? template.layers.find((layer) => layer.id === targetLayerId && isShapeLayer(layer))
-        : null) || selectedLayers.find((layer) => isShapeLayer(layer));
+        : null) || (useSelectedFrame ? selectedLayers.find((layer) => isShapeLayer(layer)) : null);
     if (targetFrame) {
+      const targetIsStandaloneImage = isStandaloneImageLayer(targetFrame);
       updateTemplate((current) => ({
         ...current,
         updatedAt: new Date().toISOString(),
@@ -2701,10 +3050,11 @@ export default function App() {
             ? {
                 ...layer,
                 kind: "shape",
-                shapeVariant: layer.shapeVariant || "frame",
+                shapeVariant: targetIsStandaloneImage ? "image" : layer.shapeVariant || "frame",
                 imageDataUrl: dataUrl,
                 imageName: image.name,
-                fill: "#ffffff",
+                imageUsage: targetIsStandaloneImage ? "standalone" : "frame-fill",
+                fill: targetIsStandaloneImage ? "#ffffff" : layer.fill || "#eef7ff",
                 stroke: layer.stroke || "#8b3dff",
                 strokeWidth: layer.strokeWidth ?? 0,
                 cornerRadius: layer.cornerRadius ?? 28
@@ -2728,10 +3078,10 @@ export default function App() {
       Math.round(dropPoint ? dropPoint.y - height / 2 : (template.height - height) / 2)
     );
     const layer: TextLayer = {
-      id: uid("frame"),
+      id: uid("image"),
       name: image.name || "Image frame",
       kind: "shape",
-      shapeVariant: "frame",
+      shapeVariant: "image",
       column: "",
       x,
       y,
@@ -2748,6 +3098,7 @@ export default function App() {
       opacity: 1,
       imageDataUrl: dataUrl,
       imageName: image.name,
+      imageUsage: "standalone",
       align: "left",
       lineHeight: 1.16,
       letterSpacing: 0,
@@ -3231,6 +3582,36 @@ export default function App() {
     }));
   }
 
+  function openPageSizeMenu() {
+    setPageSizeDraft({
+      width: String(template.width),
+      height: String(template.height)
+    });
+    setShowDownloadMenu(false);
+    setShowPageSizeMenu((current) => !current);
+  }
+
+  function applyPageSizeDraft() {
+    const width = Math.round(Number(pageSizeDraft.width));
+    const height = Math.round(Number(pageSizeDraft.height));
+    if (!Number.isFinite(width) || !Number.isFinite(height)) return;
+    const nextWidth = Math.min(10000, Math.max(64, width));
+    const nextHeight = Math.min(10000, Math.max(64, height));
+
+    updateTemplate((current) => ({
+      ...current,
+      width: nextWidth,
+      height: nextHeight,
+      updatedAt: new Date().toISOString()
+    }));
+    setPageSizeDraft({
+      width: String(nextWidth),
+      height: String(nextHeight)
+    });
+    setShowPageSizeMenu(false);
+    setZoomLevel(1);
+  }
+
   function renameTemplateImage(imageId: string, name: string) {
     setAppState((current) => ({
       ...current,
@@ -3620,7 +4001,7 @@ export default function App() {
       const image = appState.templateImages.find((item) => item.id === imageId);
       if (!image) return;
       const targetFrame = findShapeLayerAtPoint(point);
-      placeImageInFrame(image, targetFrame?.id, point);
+      placeImageInFrame(image, targetFrame?.id, point, false);
       return;
     }
 
@@ -3728,6 +4109,7 @@ export default function App() {
   }
 
   function handleLayerDragStart(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
+    setAlignmentGuides([]);
     if (!selectedLayerIds.includes(layerId) || selectedLayerIds.length < 2) {
       groupDragRef.current = null;
       return;
@@ -3749,18 +4131,19 @@ export default function App() {
 
   function handleLayerDragMove(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
     const groupDrag = groupDragRef.current;
-    if (!groupDrag || groupDrag.activeLayerId !== layerId) return;
-    const deltaX = event.target.x() - groupDrag.startX;
-    const deltaY = event.target.y() - groupDrag.startY;
-    selectedLayerIds.forEach((id) => {
-      if (id === layerId) return;
-      const node = layerRefs.current[id];
-      const position = groupDrag.positions[id];
-      if (node && position) {
-        node.position({ x: position.x + deltaX, y: position.y + deltaY });
-      }
-    });
-    transformerRef.current?.forceUpdate();
+    if (groupDrag && groupDrag.activeLayerId === layerId) {
+      const deltaX = event.target.x() - groupDrag.startX;
+      const deltaY = event.target.y() - groupDrag.startY;
+      selectedLayerIds.forEach((id) => {
+        if (id === layerId) return;
+        const node = layerRefs.current[id];
+        const position = groupDrag.positions[id];
+        if (node && position) {
+          node.position({ x: position.x + deltaX, y: position.y + deltaY });
+        }
+      });
+    }
+    updateAlignmentGuidesForDrag(layerId);
   }
 
   function handleLayerDragEnd(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
@@ -3782,6 +4165,7 @@ export default function App() {
         )
       }));
       groupDragRef.current = null;
+      setAlignmentGuides([]);
       return;
     }
 
@@ -3798,6 +4182,7 @@ export default function App() {
           : item
       )
     }));
+    setAlignmentGuides([]);
   }
 
   function normalizeLayerResizeNode(
@@ -4086,12 +4471,12 @@ export default function App() {
         <button
           type="button"
           className={activeDesignPanel === "text" ? "rail-tab active" : "rail-tab"}
-          title="Text"
+          title={isAdmin ? "Text" : "Data"}
           aria-pressed={activeDesignPanel === "text"}
           onClick={() => setActiveDesignPanel("text")}
         >
-          <Type size={24} />
-          <span>Text</span>
+          {isAdmin ? <Type size={24} /> : <FileSpreadsheet size={24} />}
+          <span>{isAdmin ? "Text" : "Data"}</span>
         </button>
 
         <div className="rail-pages">
@@ -4187,7 +4572,64 @@ export default function App() {
               </button>
             </div>
           </div>
-          <div className="topbar-title">{template.name} - Facebook Post</div>
+          <div className="topbar-title-wrap" ref={pageSizeMenuRef}>
+            <button
+              type="button"
+              className={showPageSizeMenu ? "topbar-title active" : "topbar-title"}
+              aria-expanded={showPageSizeMenu}
+              title="Change page size"
+              onClick={openPageSizeMenu}
+            >
+              {template.name} - {template.width} x {template.height} px
+            </button>
+            {showPageSizeMenu ? (
+              <form
+                className="page-size-popover"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  applyPageSizeDraft();
+                }}
+              >
+                <div className="page-size-popover-title">Page size</div>
+                <div className="page-size-grid">
+                  <label>
+                    <span>W</span>
+                    <input
+                      autoFocus
+                      type="number"
+                      min={64}
+                      max={10000}
+                      value={pageSizeDraft.width}
+                      onChange={(event) =>
+                        setPageSizeDraft((current) => ({
+                          ...current,
+                          width: event.target.value
+                        }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>H</span>
+                    <input
+                      type="number"
+                      min={64}
+                      max={10000}
+                      value={pageSizeDraft.height}
+                      onChange={(event) =>
+                        setPageSizeDraft((current) => ({
+                          ...current,
+                          height: event.target.value
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+                <button type="submit" className="page-size-apply-btn">
+                  Apply
+                </button>
+              </form>
+            ) : null}
+          </div>
           <div className="topbar-right">
             <div className={`cloud-sync-pill ${cloudSync.status}`}>
               <Save size={15} />
@@ -4264,20 +4706,6 @@ export default function App() {
           <section className="left-panel panel design-panel">
             {activeDesignPanel === "elements" ? (
               <>
-                <div className="canva-search">
-                  <Plus size={20} />
-                  <span>Describe your ideal element</span>
-                  <Search size={18} />
-                </div>
-
-                <div className="design-action-row">
-                  <button type="button" className="generate-btn">
-                    <ImageUp size={18} />
-                    Generate
-                  </button>
-                  <button type="button" className="search-purple-btn">Search</button>
-                </div>
-
                 <div className="section-label">Browse categories</div>
                 <div className="element-category-grid">
                   <button type="button" className="element-card" onClick={() => addShapeLayer("frame")}>
@@ -4354,12 +4782,6 @@ export default function App() {
                   />
                 </div>
 
-                <div className="image-drop-hint">
-                  {selectionHasShape
-                    ? "Drag an image into the selected frame, or click to replace it."
-                    : "Drag an image into a frame, or click to create a new frame."}
-                </div>
-
                 {imagesInActiveFolder.length ? (
                   <div className="image-library-grid">
                     {imagesInActiveFolder.map((item) => (
@@ -4399,25 +4821,29 @@ export default function App() {
               <>
                 <div className="panel-head compact">
                   <div>
-                    <h2>Text</h2>
-                    <p>Add text to the canvas</p>
+                    <h2>{isAdmin ? "Text" : "Data"}</h2>
+                    <p>{isAdmin ? "Add text to the canvas" : "Chọn mã căn để tự động điền thông tin trên ảnh"}</p>
                   </div>
-                  <Type size={20} />
+                  {isAdmin ? <Type size={20} /> : <FileSpreadsheet size={20} />}
                 </div>
 
-                <div className="text-preset-list">
-                  <button type="button" onClick={() => addFreeTextLayer(120, 120, "Add a heading", 56)}>
-                    Add a heading
-                  </button>
-                  <button type="button" onClick={() => addFreeTextLayer(120, 190, "Add a subheading", 34)}>
-                    Add a subheading
-                  </button>
-                  <button type="button" onClick={() => addFreeTextLayer(120, 250, "Add a little bit of body text", 24)}>
-                    Add body text
-                  </button>
-                </div>
+                {isAdmin ? (
+                  <>
+                    <div className="text-preset-list">
+                      <button type="button" onClick={() => addFreeTextLayer(120, 120, "Add a heading", 56)}>
+                        Add a heading
+                      </button>
+                      <button type="button" onClick={() => addFreeTextLayer(120, 190, "Add a subheading", 34)}>
+                        Add a subheading
+                      </button>
+                      <button type="button" onClick={() => addFreeTextLayer(120, 250, "Add a little bit of body text", 24)}>
+                        Add body text
+                      </button>
+                    </div>
 
-                <div className="design-section-divider" />
+                    <div className="design-section-divider" />
+                  </>
+                ) : null}
 
                 <div className="form-group">
                   <label>Dataset</label>
@@ -4441,7 +4867,7 @@ export default function App() {
                 {hasSelectedDataset ? (
                   <>
                     <div className="form-group">
-                      <label>Preview row</label>
+                      <label>{isAdmin ? "Preview row" : "Mã căn"}</label>
                       <CustomSelect
                         value={String(selectedRowIndex)}
                         options={dataset.rows.map((row, index) => ({
@@ -4450,102 +4876,229 @@ export default function App() {
                         }))}
                         onChange={(nextValue) => setSelectedRowIndex(Number(nextValue))}
                         searchable
-                        searchPlaceholder="Search row"
+                        searchPlaceholder={isAdmin ? "Search row" : "Tìm mã căn"}
                       />
                     </div>
 
-                    <div className="column-section">
-                      <div className="section-label">Data text</div>
-                      <div className="column-grid">
-                        {dataset.columns.map((column) => (
-                          <button
-                            type="button"
-                            key={column}
-                            className="column-chip"
-                            draggable={canEditWorkspace}
-                            onDragStart={(event) =>
-                              event.dataTransfer.setData("text/column", column)
-                            }
-                            onClick={() => addTextLayer(column)}
-                            disabled={!canEditWorkspace}
-                          >
-                            <Plus size={14} />
-                            {column}
-                          </button>
-                        ))}
+                    {isAdmin ? (
+                      <div className="column-section">
+                        <div className="section-label">Data text</div>
+                        <div className="column-grid">
+                          {dataset.columns.map((column) => (
+                            <button
+                              type="button"
+                              key={column}
+                              className="column-chip"
+                              draggable={canEditWorkspace}
+                              onDragStart={(event) =>
+                                event.dataTransfer.setData("text/column", column)
+                              }
+                              onClick={() => addTextLayer(column)}
+                              disabled={!canEditWorkspace}
+                            >
+                              <Plus size={14} />
+                              {column}
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                    </div>
+                    ) : null}
                   </>
                 ) : null}
               </>
             )}
           </section>
           <section className="canvas-panel" ref={canvasWrapRef}>
-            <div className="canvas-toolbar canva-property-toolbar">
-              <div className="selection-toolbar" aria-label="Selected layer properties">
-                {selectedLayer ? selectedLayerIsShape ? (
+            {selectedLayer ? (
+              <div className="canvas-toolbar canva-property-toolbar">
+                <div className="selection-toolbar" aria-label="Selected layer properties">
+                  {hasMultiSelection ? (
                   <>
-                    {selectedLayer.imageDataUrl ? (
-                      <div className="toolbar-image-chip" title={selectedLayer.imageName || "Frame image"}>
-                        <img src={selectedLayer.imageDataUrl} alt="" />
-                        <button
-                          type="button"
-                          title="Remove image"
-                          disabled={!canEditWorkspace}
-                          onClick={() => updateSelectedLayer({ imageDataUrl: undefined, imageName: undefined })}
-                        >
-                          <X size={14} />
-                        </button>
-                      </div>
-                    ) : null}
-
-                    <div className="toolbar-color-field compact-color-field" title="Fill">
-                      <HexColorInput
-                        value={selectedLayer.fill || "#8b3dff"}
+                    <div className="toolbar-group-label">{selectedLayers.length} selected</div>
+                    <div className="toolbar-segmented" aria-label="Horizontal group alignment">
+                      <button
+                        type="button"
                         disabled={!canEditWorkspace}
-                        onChange={(nextValue) => updateSelectedLayer({ fill: nextValue })}
-                      />
+                        onClick={() => alignSelectedLayers("horizontal", "start")}
+                        title="Align left"
+                      >
+                        <AlignHorizontalJustifyStart size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!canEditWorkspace}
+                        onClick={() => alignSelectedLayers("horizontal", "center")}
+                        title="Align center"
+                      >
+                        <AlignHorizontalJustifyCenter size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!canEditWorkspace}
+                        onClick={() => alignSelectedLayers("horizontal", "end")}
+                        title="Align right"
+                      >
+                        <AlignHorizontalJustifyEnd size={16} />
+                      </button>
                     </div>
-
+                    <div className="toolbar-segmented" aria-label="Vertical group alignment">
+                      <button
+                        type="button"
+                        disabled={!canEditWorkspace}
+                        onClick={() => alignSelectedLayers("vertical", "start")}
+                        title="Align top"
+                      >
+                        <AlignVerticalJustifyStart size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!canEditWorkspace}
+                        onClick={() => alignSelectedLayers("vertical", "center")}
+                        title="Align middle"
+                      >
+                        <AlignVerticalJustifyCenter size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!canEditWorkspace}
+                        onClick={() => alignSelectedLayers("vertical", "end")}
+                        title="Align bottom"
+                      >
+                        <AlignVerticalJustifyEnd size={16} />
+                      </button>
+                    </div>
                     <button
                       type="button"
-                      className={selectedLayer.strokeWidth ? "toolbar-toggle active" : "toolbar-toggle"}
-                      disabled={!canEditWorkspace}
-                      onClick={() =>
-                        updateSelectedLayer({
-                          stroke: selectedLayer.stroke || "#8b3dff",
-                          strokeWidth: selectedLayer.strokeWidth ? 0 : 4
-                        })
-                      }
+                      className="toolbar-icon-btn"
+                      disabled={!canEditWorkspace || selectedLayers.length < 3}
+                      onClick={() => distributeSelectedLayers("horizontal")}
+                      title="Distribute horizontally"
                     >
-                      {selectedLayer.strokeWidth ? "Stroke" : "Add stroke"}
+                      <Columns3 size={17} />
                     </button>
-
-                    {selectedLayer.strokeWidth ? (
+                    <button
+                      type="button"
+                      className="toolbar-icon-btn"
+                      disabled={!canEditWorkspace || selectedLayers.length < 3}
+                      onClick={() => distributeSelectedLayers("vertical")}
+                      title="Distribute vertically"
+                    >
+                      <Rows3 size={17} />
+                    </button>
+                    <button
+                      type="button"
+                      className="toolbar-toggle"
+                      disabled={!canEditWorkspace}
+                      onClick={tidySelectedLayers}
+                      title="Tidy selection"
+                    >
+                      Tidy
+                    </button>
+                    <button
+                      type="button"
+                      className="toolbar-icon-btn danger"
+                      title="Delete selected elements"
+                      disabled={!canEditWorkspace}
+                      onClick={removeSelectedLayer}
+                    >
+                      <Trash2 size={17} />
+                    </button>
+                  </>
+                  ) : selectedLayerIsShape ? (
+                  <>
+                    {!selectedLayerIsStandaloneImage ? (
                       <>
-                        <div className="toolbar-color-field compact-color-field stroke-color-field" title="Stroke color">
+                        {selectedLayer.imageDataUrl ? (
+                          <div className="toolbar-image-chip" title={selectedLayer.imageName || "Frame image"}>
+                            <img src={selectedLayer.imageDataUrl} alt={selectedLayer.imageName || "Frame image"} />
+                            <button
+                              type="button"
+                              title="Remove image from frame"
+                              disabled={!canEditWorkspace}
+                              onClick={() =>
+                                updateSelectedLayer({
+                                  imageDataUrl: undefined,
+                                  imageName: undefined,
+                                  imageUsage: undefined
+                                })
+                              }
+                            >
+                              <X size={15} />
+                            </button>
+                          </div>
+                        ) : null}
+                        <div className="toolbar-color-field compact-color-field" title="Fill">
                           <HexColorInput
-                            value={selectedLayer.stroke || "#8b3dff"}
+                            value={selectedLayer.fill || "#8b3dff"}
                             disabled={!canEditWorkspace}
-                            onChange={(nextValue) => updateSelectedLayer({ stroke: nextValue })}
+                            onChange={(nextValue) => updateSelectedLayer({ fill: nextValue })}
                           />
                         </div>
-                        <label className="toolbar-number-field">
-                          <span>Stroke</span>
-                          <input
-                            type="number"
-                            min={1}
-                            max={40}
-                            value={selectedLayer.strokeWidth}
-                            disabled={!canEditWorkspace}
-                            onChange={(event) => updateSelectedLayer({ strokeWidth: Number(event.target.value) })}
-                          />
-                        </label>
+
+                        <button
+                          type="button"
+                          className={selectedLayer.strokeWidth ? "toolbar-toggle active" : "toolbar-toggle"}
+                          disabled={!canEditWorkspace}
+                          onClick={() =>
+                            updateSelectedLayer({
+                              stroke: selectedLayer.stroke || "#8b3dff",
+                              strokeWidth: selectedLayer.strokeWidth ? 0 : 4
+                            })
+                          }
+                        >
+                          {selectedLayer.strokeWidth ? "Stroke" : "Add stroke"}
+                        </button>
+
+                        {selectedLayer.strokeWidth ? (
+                          <>
+                            <div className="toolbar-color-field compact-color-field stroke-color-field" title="Stroke color">
+                              <HexColorInput
+                                value={selectedLayer.stroke || "#8b3dff"}
+                                disabled={!canEditWorkspace}
+                                onChange={(nextValue) => updateSelectedLayer({ stroke: nextValue })}
+                              />
+                            </div>
+                            <label className="toolbar-number-field">
+                              <span
+                                className="toolbar-scrub-handle"
+                                onPointerDown={(event) =>
+                                  beginToolbarNumberScrub(event, {
+                                    value: selectedLayer.strokeWidth || 1,
+                                    min: 1,
+                                    max: 40,
+                                    onChange: (nextValue) => updateSelectedLayer({ strokeWidth: nextValue })
+                                  })
+                                }
+                              >
+                                Stroke
+                              </span>
+                              <input
+                                type="number"
+                                min={1}
+                                max={40}
+                                value={selectedLayer.strokeWidth}
+                                disabled={!canEditWorkspace}
+                                onChange={(event) => updateSelectedLayer({ strokeWidth: Number(event.target.value) })}
+                              />
+                            </label>
+                          </>
+                        ) : null}
                       </>
                     ) : null}
 
                     <label className="toolbar-number-field">
-                      <span>W</span>
+                      <span
+                        className="toolbar-scrub-handle"
+                        onPointerDown={(event) =>
+                          beginToolbarNumberScrub(event, {
+                            value: selectedShapeWidth,
+                            min: 24,
+                            onChange: (nextValue) => updateSelectedLayer({ width: nextValue })
+                          })
+                        }
+                      >
+                        W
+                      </span>
                       <input
                         ref={shapeWidthInputRef}
                         type="number"
@@ -4556,7 +5109,18 @@ export default function App() {
                       />
                     </label>
                     <label className="toolbar-number-field">
-                      <span>H</span>
+                      <span
+                        className="toolbar-scrub-handle"
+                        onPointerDown={(event) =>
+                          beginToolbarNumberScrub(event, {
+                            value: selectedShapeHeight,
+                            min: 24,
+                            onChange: (nextValue) => updateSelectedLayer({ height: nextValue })
+                          })
+                        }
+                      >
+                        H
+                      </span>
                       <input
                         ref={shapeHeightInputRef}
                         type="number"
@@ -4567,7 +5131,25 @@ export default function App() {
                       />
                     </label>
                     <label className="toolbar-number-field">
-                      <span className="toolbar-field-icon" title="Rounded corners">
+                      <span
+                        className={
+                          selectedLayer.shapeVariant === "circle"
+                            ? "toolbar-field-icon"
+                            : "toolbar-field-icon toolbar-scrub-handle"
+                        }
+                        title="Rounded corners"
+                        onPointerDown={
+                          selectedLayer.shapeVariant === "circle"
+                            ? undefined
+                            : (event) =>
+                                beginToolbarNumberScrub(event, {
+                                  value: selectedShapeRadius,
+                                  min: 0,
+                                  max: 240,
+                                  onChange: (nextValue) => updateSelectedLayer({ cornerRadius: nextValue })
+                                })
+                        }
+                      >
                         <SquareRoundCorner size={15} />
                       </span>
                       <input
@@ -4580,6 +5162,35 @@ export default function App() {
                         onChange={(event) => updateSelectedLayer({ cornerRadius: Number(event.target.value) })}
                       />
                     </label>
+                    {selectedLayerIsStandaloneImage ? (
+                      <label className="toolbar-number-field opacity-field">
+                        <span
+                          className="toolbar-scrub-handle"
+                          onPointerDown={(event) =>
+                            beginToolbarNumberScrub(event, {
+                              value: Math.round((selectedLayer.opacity ?? 1) * 100),
+                              min: 0,
+                              max: 100,
+                              onChange: (nextValue) => updateSelectedLayer({ opacity: nextValue / 100 })
+                            })
+                          }
+                        >
+                          Opacity
+                        </span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={Math.round((selectedLayer.opacity ?? 1) * 100)}
+                          disabled={!canEditWorkspace}
+                          onChange={(event) =>
+                            updateSelectedLayer({
+                              opacity: Math.min(1, Math.max(0, Number(event.target.value) / 100))
+                            })
+                          }
+                        />
+                      </label>
+                    ) : null}
                     <button
                       type="button"
                       className="toolbar-icon-btn danger"
@@ -4590,7 +5201,7 @@ export default function App() {
                       <Trash2 size={17} />
                     </button>
                   </>
-                ) : (
+                  ) : (
                   <>
                     {typeof selectedLayer.content === "string" ? (
                       <input
@@ -4604,25 +5215,63 @@ export default function App() {
                           })
                         }
                       />
-                    ) : (
-                      <div className="toolbar-select element-select">
-                        <CustomSelect
-                          value={selectedLayer.column}
-                          disabled={!canEditWorkspace || hasMultiSelection}
-                          options={dataset.columns.map((column) => ({ value: column, label: column }))}
-                          onChange={(nextValue) => updateSelectedLayer({ column: nextValue, name: nextValue })}
-                        />
-                      </div>
-                    )}
+                    ) : null}
                     <div className="toolbar-select font-select">
                       <CustomSelect
                         value={selectedLayer.fontFamily}
                         disabled={!canEditWorkspace}
                         options={availableFonts.map((font) => ({ value: font, label: font }))}
-                        onChange={(nextValue) => updateSelectedLayer({ fontFamily: nextValue })}
+                        onChange={(nextValue) => {
+                          const matchingStyles = appState.customFonts.filter(
+                            (font) => font.family === nextValue
+                          );
+                          const nextStyle =
+                            matchingStyles.find(
+                              (font) =>
+                                (font.fontWeight || "400") === selectedLayer.fontWeight &&
+                                (font.fontStyle || "normal") === (selectedLayer.fontStyle || "normal")
+                            ) || matchingStyles[0];
+                          updateSelectedLayer(
+                            nextStyle
+                              ? {
+                                  fontFamily: nextValue,
+                                  fontWeight: nextStyle.fontWeight || "400",
+                                  fontStyle: nextStyle.fontStyle || "normal"
+                                }
+                              : { fontFamily: nextValue }
+                          );
+                        }}
+                      />
+                    </div>
+                    <div className="toolbar-select style-select">
+                      <CustomSelect
+                        value={selectedFontStyleValue}
+                        disabled={!canEditWorkspace}
+                        options={selectedFontStyleOptions}
+                        onChange={(nextValue) => {
+                          const [fontWeight, nextStyle = "normal"] = nextValue.split("|");
+                          updateSelectedLayer({
+                            fontWeight,
+                            fontStyle: nextStyle === "italic" ? "italic" : "normal"
+                          });
+                        }}
                       />
                     </div>
                     <label className="toolbar-number-field compact">
+                      <span
+                        className="toolbar-field-icon toolbar-scrub-handle"
+                        title="Font size"
+                        onPointerDown={(event) =>
+                          beginToolbarNumberScrub(event, {
+                            value: selectedLayer.fontSize,
+                            min: 8,
+                            max: 220,
+                            onChange: (nextValue) => updateSelectedLayer({ fontSize: nextValue })
+                          })
+                        }
+                      >
+                        <Type size={15} />
+                      </span>
                       <input
                         type="number"
                         min={8}
@@ -4639,22 +5288,6 @@ export default function App() {
                         onChange={(nextValue) => updateSelectedLayer({ color: nextValue })}
                       />
                     </div>
-                    <button
-                      type="button"
-                      className={selectedLayer.fontWeight === "700" ? "toolbar-toggle active" : "toolbar-toggle"}
-                      disabled={!canEditWorkspace}
-                      onClick={() => updateSelectedLayer({ fontWeight: selectedLayer.fontWeight === "700" ? "400" : "700" })}
-                    >
-                      B
-                    </button>
-                    <button
-                      type="button"
-                      className={selectedLayer.fontStyle === "italic" ? "toolbar-toggle active italic" : "toolbar-toggle italic"}
-                      disabled={!canEditWorkspace}
-                      onClick={() => updateSelectedLayer({ fontStyle: selectedLayer.fontStyle === "italic" ? "normal" : "italic" })}
-                    >
-                      I
-                    </button>
                     <div className="toolbar-segmented">
                       {(["left", "center", "right"] as const).map((align) => (
                         <button
@@ -4670,7 +5303,18 @@ export default function App() {
                       ))}
                     </div>
                     <label className="toolbar-number-field">
-                      <span>W</span>
+                      <span
+                        className="toolbar-scrub-handle"
+                        onPointerDown={(event) =>
+                          beginToolbarNumberScrub(event, {
+                            value: Math.round(selectedLayer.width),
+                            min: 80,
+                            onChange: (nextValue) => updateSelectedLayer({ width: nextValue })
+                          })
+                        }
+                      >
+                        W
+                      </span>
                       <input
                         type="number"
                         min={80}
@@ -4689,11 +5333,10 @@ export default function App() {
                       <Trash2 size={17} />
                     </button>
                   </>
-                ) : (
-                  <div className="toolbar-empty-state">Select a layer</div>
-                )}
+                  )}
+                </div>
               </div>
-            </div>
+            ) : null}
 
             <div
               ref={canvasShellRef}
@@ -4806,6 +5449,16 @@ export default function App() {
                         listening={false}
                       />
                     ) : null}
+                    {alignmentGuides.map((guide) => (
+                      <Line
+                        key={guide.id}
+                        points={guide.points}
+                        stroke="#8b3dff"
+                        strokeWidth={Math.max(1, 1 / stageScale)}
+                        dash={[7 / stageScale, 5 / stageScale]}
+                        listening={false}
+                      />
+                    ))}
                     <Transformer
                       ref={transformerRef}
                       visible={activeCanvasTool === "move" && !inlineTextEditor}

@@ -1416,6 +1416,7 @@ label.disabled {
 
 .canvas-panel {
   min-width: 0;
+  position: relative;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -3304,15 +3305,104 @@ label.disabled {
   font-weight: 850;
 }
 
+.topbar-title-wrap {
+  position: relative;
+  min-width: 0;
+  justify-self: center;
+}
+
 .topbar-title {
   min-width: 0;
+  max-width: min(420px, 44vw);
+  min-height: 36px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
   color: rgba(255, 255, 255, 0.72);
+  padding: 0 12px;
   font-size: 14px;
   font-weight: 850;
   text-align: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.topbar-title:hover,
+.topbar-title.active {
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+}
+
+.page-size-popover {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 8px);
+  left: 50%;
+  width: 260px;
+  transform: translateX(-50%);
+  border: 1px solid #dfe5ef;
+  border-radius: 14px;
+  background: #ffffff;
+  color: #111827;
+  padding: 12px;
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.2);
+}
+
+.page-size-popover-title {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 900;
+  margin-bottom: 10px;
+}
+
+.page-size-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.page-size-grid label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  border: 1.5px solid #dbe3ef;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #64748b;
+  padding: 0 9px;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.page-size-grid input {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: #111827;
+  padding: 0;
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.page-size-apply-btn {
+  width: 100%;
+  min-height: 40px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--primary-blue);
+  color: #ffffff;
+  margin-top: 10px;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.page-size-apply-btn:hover {
+  background: var(--primary-blue-hover);
 }
 
 .topbar-history {
@@ -3456,59 +3546,6 @@ label.disabled {
   padding: 22px 20px;
 }
 
-.canva-search {
-  min-height: 52px;
-  display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) 24px;
-  align-items: center;
-  gap: 12px;
-  border: 1.5px solid #ead7ff;
-  border-radius: 18px;
-  color: #6b7280;
-  padding: 0 14px;
-  font-size: 14px;
-  font-weight: 650;
-  margin-bottom: 14px;
-}
-
-.canva-search span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.design-action-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 10px;
-  margin-bottom: 22px;
-}
-
-.generate-btn,
-.search-purple-btn {
-  min-height: 48px;
-  border-radius: 13px;
-  font-size: 14px;
-  font-weight: 850;
-}
-
-.generate-btn {
-  border: 1px solid #d7dce7;
-  background: #ffffff;
-  color: #111827;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-}
-
-.search-purple-btn {
-  border: 0;
-  background: #8b3dff;
-  color: #ffffff;
-}
-
 .element-category-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -3605,20 +3642,6 @@ label.disabled {
   border-color: #c7d2fe;
   background: #f8f7ff;
   transform: translateY(-1px);
-}
-
-.image-drop-hint {
-  min-height: 42px;
-  display: flex;
-  align-items: center;
-  border: 1px dashed #d6c7ff;
-  border-radius: 12px;
-  background: #fbf8ff;
-  color: #6b4fb5;
-  padding: 9px 12px;
-  margin-bottom: 14px;
-  font-size: 13px;
-  font-weight: 800;
 }
 
 .image-library-grid {
@@ -3779,12 +3802,20 @@ label.disabled {
 }
 
 .canva-property-toolbar {
-  position: relative;
-  min-height: 78px;
+  position: absolute;
+  top: 14px;
+  left: 16px;
+  right: 16px;
+  z-index: 8;
+  min-height: 0;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   gap: 12px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  pointer-events: none;
 }
 
 .selection-toolbar,
@@ -3804,14 +3835,19 @@ label.disabled {
 }
 
 .selection-toolbar {
-  position: absolute;
-  left: 50%;
-  top: 50%;
+  position: relative;
+  left: auto;
+  top: auto;
   z-index: 3;
-  max-width: min(860px, calc(100% - 360px));
-  transform: translate(-50%, -50%);
+  max-width: min(860px, calc(100% - 32px));
+  transform: none;
   overflow-x: auto;
   scrollbar-width: none;
+  pointer-events: auto;
+}
+
+.selection-toolbar:has(.custom-select.open) {
+  overflow: visible;
 }
 
 .selection-toolbar::-webkit-scrollbar {
@@ -3822,11 +3858,16 @@ label.disabled {
   margin-left: auto;
 }
 
-.toolbar-empty-state {
-  color: #64748b;
-  padding: 0 12px;
+.toolbar-group-label {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 10px;
+  background: #f6f0ff;
+  color: #7d2ae8;
+  padding: 0 11px;
   font-size: 13px;
-  font-weight: 850;
+  font-weight: 900;
   white-space: nowrap;
 }
 
@@ -3849,7 +3890,13 @@ label.disabled {
 }
 
 .font-select {
-  width: 150px;
+  flex: 0 0 180px;
+  width: 180px;
+}
+
+.style-select {
+  flex: 0 0 132px;
+  width: 132px;
 }
 
 .export-select {
@@ -3942,12 +3989,35 @@ label.disabled {
   font-weight: 850;
 }
 
+.toolbar-number-field input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.toolbar-number-field input[type="number"]::-webkit-inner-spin-button,
+.toolbar-number-field input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 .toolbar-field-icon {
   width: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: #64748b;
+}
+
+.toolbar-scrub-handle {
+  display: inline-flex;
+  align-items: center;
+  cursor: ew-resize;
+  user-select: none;
+  touch-action: none;
+}
+
+.toolbar-scrub-handle:hover {
+  color: #7d2ae8;
 }
 
 .toolbar-number-field.compact input {
@@ -3978,6 +4048,18 @@ label.disabled {
 .toolbar-icon-btn:hover:not(:disabled) {
   background: #f2edff;
   color: #7d2ae8;
+}
+
+.toolbar-number-field.opacity-field input {
+  width: 50px;
+}
+
+.toolbar-toggle:disabled,
+.toolbar-icon-btn:disabled,
+.toolbar-segmented button:disabled {
+  cursor: not-allowed;
+  color: #94a3b8;
+  opacity: 0.55;
 }
 
 .toolbar-toggle.italic {
@@ -4077,7 +4159,7 @@ label.disabled {
 }
 
 .canvas-workspace {
-  padding: 36px 38px 86px;
+  padding: 24px 38px 86px;
 }
 
 .stage-card {
