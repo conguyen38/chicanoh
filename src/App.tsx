@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Konva from "konva";
 import {
   Stage,
@@ -22,6 +23,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Circle,
   Columns3,
   Download,
   Eye,
@@ -41,20 +43,23 @@ import {
   Save,
   Search,
   Settings,
+  Shapes,
   SlidersHorizontal,
+  Square,
+  SquareRoundCorner,
   TextCursorInput,
   Trash2,
   Type,
   Redo2,
   Undo2,
-  X,
-  ZoomIn,
-  ZoomOut
+  X
 } from "lucide-react";
 
 type RowData = Record<string, string>;
 
 type CanvasTool = "move" | "hand" | "text";
+type DesignPanel = "elements" | "images" | "text";
+type ShapeVariant = "frame" | "rect" | "circle";
 
 type InlineTextEditor = {
   layerId: string;
@@ -92,16 +97,26 @@ type PendingDataset = Omit<Dataset, "id" | "importedAt"> & {
 type TextLayer = {
   id: string;
   name: string;
+  kind?: "text" | "shape";
+  shapeVariant?: ShapeVariant;
   column: string;
   content?: string;
   x: number;
   y: number;
   width: number;
+  height?: number;
   fontFamily: string;
   fontSize: number;
   fontWeight: string;
   fontStyle?: "normal" | "italic";
   color: string;
+  fill?: string;
+  stroke?: string;
+  strokeWidth?: number;
+  cornerRadius?: number;
+  opacity?: number;
+  imageDataUrl?: string;
+  imageName?: string;
   align: "left" | "center" | "right";
   lineHeight: number;
   letterSpacing: number;
@@ -240,14 +255,139 @@ function normalizeHexColor(value: string) {
   return null;
 }
 
+function hexToRgb(hex: string) {
+  const normalized = normalizeHexColor(hex);
+  if (!normalized) return { r: 0, g: 0, b: 0 };
+  return {
+    r: parseInt(normalized.slice(1, 3), 16),
+    g: parseInt(normalized.slice(3, 5), 16),
+    b: parseInt(normalized.slice(5, 7), 16)
+  };
+}
+
+function rgbToHex(r: number, g: number, b: number) {
+  return `#${[r, g, b]
+    .map((value) => Math.round(Math.min(255, Math.max(0, value))).toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
+function rgbToHsv(r: number, g: number, b: number) {
+  const red = r / 255;
+  const green = g / 255;
+  const blue = b / 255;
+  const max = Math.max(red, green, blue);
+  const min = Math.min(red, green, blue);
+  const delta = max - min;
+  let hue = 0;
+
+  if (delta) {
+    if (max === red) hue = ((green - blue) / delta) % 6;
+    else if (max === green) hue = (blue - red) / delta + 2;
+    else hue = (red - green) / delta + 4;
+    hue *= 60;
+    if (hue < 0) hue += 360;
+  }
+
+  return {
+    h: hue,
+    s: max === 0 ? 0 : delta / max,
+    v: max
+  };
+}
+
+function hsvToRgb(h: number, s: number, v: number) {
+  const chroma = v * s;
+  const x = chroma * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - chroma;
+  let red = 0;
+  let green = 0;
+  let blue = 0;
+
+  if (h < 60) [red, green, blue] = [chroma, x, 0];
+  else if (h < 120) [red, green, blue] = [x, chroma, 0];
+  else if (h < 180) [red, green, blue] = [0, chroma, x];
+  else if (h < 240) [red, green, blue] = [0, x, chroma];
+  else if (h < 300) [red, green, blue] = [x, 0, chroma];
+  else [red, green, blue] = [chroma, 0, x];
+
+  return {
+    r: (red + m) * 255,
+    g: (green + m) * 255,
+    b: (blue + m) * 255
+  };
+}
+
+function hueToHex(hue: number) {
+  const rgb = hsvToRgb(hue, 1, 1);
+  return rgbToHex(rgb.r, rgb.g, rgb.b);
+}
+
 function HexColorInput({ value, onChange, disabled = false }: HexColorInputProps) {
   const [draft, setDraft] = useState(value.toUpperCase());
-  const nativeColorRef = useRef<HTMLInputElement>(null);
+  const [isOpen, setIsOpen] = useState(false);
+  const [popoverPosition, setPopoverPosition] = useState({ top: 0, left: 0 });
+  const swatchButtonRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const colorAreaRef = useRef<HTMLDivElement>(null);
   const canPickScreenColor = typeof window !== "undefined" && Boolean(window.EyeDropper);
+  const rgb = hexToRgb(value);
+  const hsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
+  const hue = Math.round(hsv.h);
+  const hueColor = hueToHex(hue || 0);
+  const presetColors = [
+    "#000000",
+    "#ffffff",
+    "#8b3dff",
+    "#2f6fe4",
+    "#00c4cc",
+    "#22c55e",
+    "#facc15",
+    "#fb923c",
+    "#ef4444",
+    "#ec4899"
+  ];
 
   useEffect(() => {
     setDraft(value.toUpperCase());
   }, [value]);
+
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    const updatePosition = () => {
+      const anchor = swatchButtonRef.current?.getBoundingClientRect();
+      if (!anchor) return;
+      const width = 332;
+      const left = Math.min(window.innerWidth - width - 12, Math.max(12, anchor.left - 18));
+      const top =
+        anchor.bottom + 10 + 330 > window.innerHeight
+          ? Math.max(12, anchor.top - 330)
+          : anchor.bottom + 10;
+      setPopoverPosition({ top, left });
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (
+        popoverRef.current?.contains(target) ||
+        swatchButtonRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setIsOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [isOpen]);
 
   function handleChange(nextValue: string) {
     setDraft(nextValue.toUpperCase());
@@ -270,24 +410,111 @@ function HexColorInput({ value, onChange, disabled = false }: HexColorInputProps
     }
   }
 
+  function applyHsv(nextHue: number, saturation: number, brightness: number) {
+    const nextRgb = hsvToRgb(nextHue, saturation, brightness);
+    handleChange(rgbToHex(nextRgb.r, nextRgb.g, nextRgb.b));
+  }
+
+  function pickFromColorArea(event: React.PointerEvent<HTMLDivElement>) {
+    if (disabled) return;
+    const rect = colorAreaRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const saturation = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+    const brightness = 1 - Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+    applyHsv(hue || 0, saturation, brightness);
+  }
+
+  const popover =
+    isOpen && typeof document !== "undefined"
+      ? createPortal(
+          <div
+            ref={popoverRef}
+            className="color-picker-popover"
+            style={{ top: popoverPosition.top, left: popoverPosition.left }}
+          >
+            <div
+              ref={colorAreaRef}
+              className="color-picker-area"
+              style={{ backgroundColor: hueColor }}
+              onPointerDown={(event) => {
+                event.currentTarget.setPointerCapture(event.pointerId);
+                pickFromColorArea(event);
+              }}
+              onPointerMove={(event) => {
+                if (event.buttons === 1) pickFromColorArea(event);
+              }}
+            >
+              <span
+                className="color-picker-target"
+                style={{
+                  left: `${hsv.s * 100}%`,
+                  top: `${(1 - hsv.v) * 100}%`
+                }}
+              />
+            </div>
+            <input
+              className="color-picker-hue"
+              type="range"
+              min={0}
+              max={359}
+              value={hue}
+              onChange={(event) => applyHsv(Number(event.target.value), hsv.s || 1, hsv.v || 1)}
+            />
+            <div className="color-picker-presets">
+              {presetColors.map((color) => (
+                <button
+                  type="button"
+                  key={color}
+                  className={normalizeHexColor(color) === normalizeHexColor(value) ? "active" : ""}
+                  style={{ backgroundColor: color }}
+                  aria-label={color}
+                  onClick={() => handleChange(color)}
+                />
+              ))}
+            </div>
+            <div className="color-picker-footer">
+              <button
+                type="button"
+                className="color-picker-current"
+                style={{ backgroundColor: value }}
+                aria-label="Current color"
+              />
+              <input
+                type="text"
+                value={draft}
+                disabled={disabled}
+                maxLength={7}
+                spellCheck={false}
+                placeholder="#000000"
+                aria-label="Hex color"
+                onChange={(event) => handleChange(event.target.value)}
+                onBlur={handleBlur}
+              />
+              <button
+                type="button"
+                className="color-picker-eyedropper"
+                title="Pick color"
+                disabled={disabled || !canPickScreenColor}
+                onClick={pickScreenColor}
+              >
+                <Pipette size={17} />
+              </button>
+            </div>
+          </div>,
+          document.body
+        )
+      : null;
+
   return (
     <div className="hex-color-field">
-      <input
-        ref={nativeColorRef}
-        className="native-color-input"
-        type="color"
-        value={value}
-        disabled={disabled}
-        onInput={(event) => handleChange(event.currentTarget.value)}
-        onChange={(event) => handleChange(event.target.value)}
-      />
       <button
+        ref={swatchButtonRef}
         type="button"
         className="hex-color-swatch"
         style={{ backgroundColor: value }}
         title="Chọn màu"
         disabled={disabled}
-        onClick={() => nativeColorRef.current?.click()}
+        onClick={() => setIsOpen((current) => !current)}
       />
       <input
         type="text"
@@ -309,6 +536,7 @@ function HexColorInput({ value, onChange, disabled = false }: HexColorInputProps
       >
         <Pipette size={16} />
       </button>
+      {popover}
     </div>
   );
 }
@@ -685,6 +913,10 @@ function layerFontStyleValue(layer: Pick<TextLayer, "fontWeight" | "fontStyle">)
   return layer.fontStyle === "italic" ? `italic ${layer.fontWeight}` : layer.fontWeight;
 }
 
+function isShapeLayer(layer: TextLayer | null | undefined): layer is TextLayer & { kind: "shape" } {
+  return layer?.kind === "shape";
+}
+
 function fontInfoFromFileName(fileName: string) {
   const baseName = cleanFontFamily(fileName);
   const nameWithoutVariableSuffix = baseName.replace(/-?VariableFont.*$/i, "");
@@ -757,16 +989,43 @@ function normalizePositiveNumber(value: unknown, fallback: number) {
 function normalizeLayer(layer: Partial<TextLayer> | null | undefined, index = 0): TextLayer {
   const align = layer?.align;
   const textTransform = layer?.textTransform;
+  const kind = layer?.kind === "shape" ? "shape" : "text";
+  const normalizedColor =
+    typeof layer?.color === "string" && normalizeHexColor(layer.color)
+      ? normalizeHexColor(layer.color)!
+      : FALLBACK_TEXT_LAYER.color;
+  const normalizedFill =
+    typeof layer?.fill === "string" && normalizeHexColor(layer.fill)
+      ? normalizeHexColor(layer.fill)!
+      : kind === "shape"
+        ? "#e9f8ff"
+        : undefined;
+  const normalizedStroke =
+    typeof layer?.stroke === "string" && normalizeHexColor(layer.stroke)
+      ? normalizeHexColor(layer.stroke)!
+      : kind === "shape"
+        ? "#8b3dff"
+        : undefined;
   return {
     ...FALLBACK_TEXT_LAYER,
     ...layer,
+    kind,
+    shapeVariant:
+      layer?.shapeVariant === "frame" ||
+      layer?.shapeVariant === "circle" ||
+      layer?.shapeVariant === "rect"
+        ? layer.shapeVariant
+        : kind === "shape"
+          ? "rect"
+          : undefined,
     id: typeof layer?.id === "string" && layer.id ? layer.id : uid("layer"),
     name: typeof layer?.name === "string" && layer.name ? layer.name : `Lớp chữ ${index + 1}`,
-    column: typeof layer?.column === "string" ? layer.column : "",
-    content: typeof layer?.content === "string" ? layer.content : undefined,
+    column: kind === "shape" ? "" : typeof layer?.column === "string" ? layer.column : "",
+    content: kind === "shape" ? undefined : typeof layer?.content === "string" ? layer.content : undefined,
     x: Number.isFinite(Number(layer?.x)) ? Number(layer?.x) : FALLBACK_TEXT_LAYER.x,
     y: Number.isFinite(Number(layer?.y)) ? Number(layer?.y) : FALLBACK_TEXT_LAYER.y,
     width: normalizePositiveNumber(layer?.width, FALLBACK_TEXT_LAYER.width),
+    height: kind === "shape" ? normalizePositiveNumber(layer?.height, 220) : layer?.height,
     fontFamily:
       typeof layer?.fontFamily === "string" && layer.fontFamily
         ? layer.fontFamily
@@ -780,10 +1039,32 @@ function normalizeLayer(layer: Partial<TextLayer> | null | undefined, index = 0)
       layer?.fontStyle === "italic" || layer?.fontStyle === "normal"
         ? layer.fontStyle
         : FALLBACK_TEXT_LAYER.fontStyle,
-    color:
-      typeof layer?.color === "string" && normalizeHexColor(layer.color)
-        ? normalizeHexColor(layer.color)!
-        : FALLBACK_TEXT_LAYER.color,
+    color: normalizedColor,
+    fill: normalizedFill,
+    stroke: normalizedStroke,
+    strokeWidth: Number.isFinite(Number(layer?.strokeWidth))
+      ? Math.max(0, Number(layer?.strokeWidth))
+      : kind === "shape"
+        ? 0
+        : undefined,
+    cornerRadius: Number.isFinite(Number(layer?.cornerRadius))
+      ? Math.max(0, Number(layer?.cornerRadius))
+      : kind === "shape"
+        ? layer?.shapeVariant === "frame"
+          ? 28
+          : 0
+        : undefined,
+    opacity: Number.isFinite(Number(layer?.opacity))
+      ? Math.min(1, Math.max(0.05, Number(layer?.opacity)))
+      : 1,
+    imageDataUrl:
+      kind === "shape" && typeof layer?.imageDataUrl === "string"
+        ? layer.imageDataUrl
+        : undefined,
+    imageName:
+      kind === "shape" && typeof layer?.imageName === "string"
+        ? layer.imageName
+        : undefined,
     align: align === "center" || align === "right" || align === "left" ? align : "left",
     lineHeight: normalizePositiveNumber(layer?.lineHeight, FALLBACK_TEXT_LAYER.lineHeight),
     letterSpacing: Number.isFinite(Number(layer?.letterSpacing))
@@ -1163,7 +1444,11 @@ function useImage(src: string) {
   return image;
 }
 
-function getCoverCrop(image: HTMLImageElement | null, width: number, height: number) {
+function getCoverCrop(
+  image: { width: number; height: number } | null,
+  width: number,
+  height: number
+) {
   if (!image) return undefined;
   const imageRatio = image.width / image.height;
   const canvasRatio = width / height;
@@ -1221,6 +1506,79 @@ function boxesIntersect(
   );
 }
 
+type ShapeLayerNodeProps = {
+  layer: TextLayer;
+  canDrag: boolean;
+  onSelect: (event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
+  onDragStart: (event: Konva.KonvaEventObject<DragEvent>) => void;
+  onDragMove: (event: Konva.KonvaEventObject<DragEvent>) => void;
+  onDragEnd: (event: Konva.KonvaEventObject<DragEvent>) => void;
+  onTransform: (event: Konva.KonvaEventObject<Event>) => void;
+  onTransformEnd: (event: Konva.KonvaEventObject<Event>) => void;
+  setNode: (node: Konva.Node | null) => void;
+};
+
+function ShapeLayerNode({
+  layer,
+  canDrag,
+  onSelect,
+  onDragStart,
+  onDragMove,
+  onDragEnd,
+  onTransform,
+  onTransformEnd,
+  setNode
+}: ShapeLayerNodeProps) {
+  const image = useImage(layer.imageDataUrl || "");
+  const width = layer.width;
+  const height = layer.height || layer.width;
+  const crop = getCoverCrop(image, width, height);
+  const cornerRadius =
+    layer.shapeVariant === "circle"
+      ? Math.min(width, height) / 2
+      : layer.cornerRadius || 0;
+  const commonProps = {
+    x: layer.x,
+    y: layer.y,
+    width,
+    height,
+    draggable: canDrag,
+    opacity: layer.opacity ?? 1,
+    onMouseDown: onSelect,
+    onTap: onSelect,
+    onDragStart,
+    onDragMove,
+    onDragEnd,
+    onTransform,
+    onTransformEnd
+  };
+
+  if (image) {
+    return (
+      <KonvaImage
+        {...commonProps}
+        ref={(node) => setNode(node)}
+        image={image}
+        crop={crop}
+        cornerRadius={cornerRadius}
+        stroke={layer.stroke}
+        strokeWidth={layer.strokeWidth || 0}
+      />
+    );
+  }
+
+  return (
+    <Rect
+      {...commonProps}
+      ref={(node) => setNode(node)}
+      fill={layer.fill || "#8b3dff"}
+      stroke={layer.stroke}
+      strokeWidth={layer.strokeWidth || 0}
+      cornerRadius={cornerRadius}
+    />
+  );
+}
+
 function isEditableTarget(target: EventTarget | null) {
   const element = target as HTMLElement | null;
   if (!element) return false;
@@ -1265,6 +1623,7 @@ export default function App() {
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
   const [selectedTemplateFolderId, setSelectedTemplateFolderId] = useState(DEFAULT_TEMPLATE_FOLDER_ID);
   const [selectedPickerFolderId, setSelectedPickerFolderId] = useState(DEFAULT_TEMPLATE_FOLDER_ID);
+  const [selectedImageFolderId, setSelectedImageFolderId] = useState(DEFAULT_TEMPLATE_FOLDER_ID);
   const [selectedPickerTemplateId, setSelectedPickerTemplateId] = useState<string | null>(null);
   const [editingTemplateFolderId, setEditingTemplateFolderId] = useState<string | null>(null);
   const [openTemplateFolderMenuId, setOpenTemplateFolderMenuId] = useState<string | null>(null);
@@ -1286,6 +1645,8 @@ export default function App() {
   const [isExporting, setIsExporting] = useState(false);
   const [isUploadingAsset, setIsUploadingAsset] = useState(false);
   const [storageWarning, setStorageWarning] = useState("");
+  const [downloadToast, setDownloadToast] = useState("");
+  const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [cloudSync, setCloudSync] = useState<CloudSyncState>({
     status: "loading",
     message: "Đang kết nối cloud..."
@@ -1295,6 +1656,7 @@ export default function App() {
   const [stageWidth, setStageWidth] = useState(0);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [activeCanvasTool, setActiveCanvasTool] = useState<CanvasTool>("move");
+  const [activeDesignPanel, setActiveDesignPanel] = useState<DesignPanel>("elements");
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [isCanvasPanning, setIsCanvasPanning] = useState(false);
   const [inlineTextEditor, setInlineTextEditor] = useState<InlineTextEditor | null>(null);
@@ -1312,7 +1674,11 @@ export default function App() {
   const canvasShellRef = useRef<HTMLDivElement>(null);
   const inlineTextEditorRef = useRef<HTMLTextAreaElement>(null);
   const settingsMenuRef = useRef<HTMLDivElement>(null);
-  const textRefs = useRef<Record<string, Konva.Text>>({});
+  const downloadMenuRef = useRef<HTMLDivElement>(null);
+  const shapeWidthInputRef = useRef<HTMLInputElement>(null);
+  const shapeHeightInputRef = useRef<HTMLInputElement>(null);
+  const shapeRadiusInputRef = useRef<HTMLInputElement>(null);
+  const layerRefs = useRef<Record<string, Konva.Node>>({});
   const selectionStartRef = useRef<{ x: number; y: number } | null>(null);
   const isSelectingRef = useRef(false);
   const isZoomShortcutPressedRef = useRef(false);
@@ -1326,6 +1692,7 @@ export default function App() {
   const remoteStateReadyRef = useRef(false);
   const skipNextRemoteSaveRef = useRef(false);
   const remoteSaveVersionRef = useRef(0);
+  const downloadToastTimeoutRef = useRef<number | null>(null);
   const canvasPanRef = useRef<{
     x: number;
     y: number;
@@ -1438,6 +1805,11 @@ export default function App() {
   )
     ? selectedPickerFolderId
     : activeTemplateFolderId;
+  const activeImageFolderId = appState.templateFolders.some(
+    (folder) => folder.id === selectedImageFolderId
+  )
+    ? selectedImageFolderId
+    : fallbackTemplateFolderId;
   const selectedTemplateFolder =
     appState.templateFolders.find((folder) => folder.id === activeTemplateFolderId) ||
     appState.templateFolders[0];
@@ -1451,6 +1823,9 @@ export default function App() {
   const templatesInPickerFolder = appState.templateImages.filter(
     (item) => item.folderId === activePickerFolderId && getTemplateLibraryImage(item)
   );
+  const imagesInActiveFolder = appState.templateImages.filter(
+    (item) => item.folderId === activeImageFolderId && getTemplateLibraryImage(item)
+  );
   const selectedPickerTemplate = selectedPickerTemplateId
     ? appState.templateImages.find((item) => item.id === selectedPickerTemplateId) || null
     : null;
@@ -1463,6 +1838,15 @@ export default function App() {
   const selectedLayers = template.layers.filter((layer) => selectedLayerIds.includes(layer.id));
   const selectedLayer = selectedLayers[0] || null;
   const hasMultiSelection = selectedLayers.length > 1;
+  const selectedLayerIsShape = isShapeLayer(selectedLayer);
+  const selectionHasShape = selectedLayers.some((layer) => isShapeLayer(layer));
+  const selectedShapeWidth = Math.round(selectedLayer?.width ?? 0);
+  const selectedShapeHeight = Math.round(selectedLayer?.height ?? selectedLayer?.width ?? 0);
+  const selectedShapeRadius = Math.round(
+    selectedLayer?.shapeVariant === "circle"
+      ? Math.min(selectedShapeWidth, selectedShapeHeight) / 2
+      : selectedLayer?.cornerRadius || 0
+  );
   const selectedFontStyleOptions = useMemo(() => {
     const baseOptions = ["100", "200", "300", "400", "500", "600", "700", "800", "900"].map(
       (weight) => ({
@@ -1488,9 +1872,11 @@ export default function App() {
   }, [appState.customFonts, selectedLayer]);
   const canUndo = historyVersion >= 0 && undoStackRef.current.length > 0;
   const canRedo = historyVersion >= 0 && redoStackRef.current.length > 0;
-  const selectedOutlineColor = selectedLayers.some((layer) => typeof layer.content !== "string")
-    ? "#dc2626"
-    : "#256fe6";
+  const selectedOutlineColor = selectionHasShape
+    ? "#8b3dff"
+    : selectedLayers.some((layer) => typeof layer.content !== "string")
+      ? "#dc2626"
+      : "#256fe6";
   const backgroundImage = useImage(template.backgroundDataUrl);
   const backgroundCrop = getCoverCrop(backgroundImage, template.width, template.height);
   const availableFonts = Array.from(
@@ -1771,13 +2157,21 @@ export default function App() {
     if (!appState.templateFolders.some((folder) => folder.id === selectedPickerFolderId)) {
       setSelectedPickerFolderId(fallbackFolderId);
     }
-  }, [appState.templateFolders, selectedTemplateFolderId, selectedPickerFolderId]);
+    if (!appState.templateFolders.some((folder) => folder.id === selectedImageFolderId)) {
+      setSelectedImageFolderId(fallbackFolderId);
+    }
+  }, [
+    appState.templateFolders,
+    selectedTemplateFolderId,
+    selectedPickerFolderId,
+    selectedImageFolderId
+  ]);
 
   useEffect(() => {
     const transformer = transformerRef.current;
     if (!transformer) return;
     const nodes = selectedLayerIds
-      .map((id) => textRefs.current[id])
+      .map((id) => layerRefs.current[id])
       .filter(Boolean);
     transformer.nodes(nodes);
     transformer.getLayer()?.batchDraw();
@@ -1804,6 +2198,32 @@ export default function App() {
     selectedLayerIdsRef.current = selectedLayerIds;
     isAdminRef.current = isAdmin;
   }, [appState, selectedLayerIds, isAdmin]);
+
+  useEffect(
+    () => () => {
+      if (downloadToastTimeoutRef.current) {
+        window.clearTimeout(downloadToastTimeoutRef.current);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!showDownloadMenu) return;
+    function closeOnOutsidePointer(event: PointerEvent) {
+      if (downloadMenuRef.current?.contains(event.target as Node | null)) return;
+      setShowDownloadMenu(false);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setShowDownloadMenu(false);
+    }
+    window.addEventListener("pointerdown", closeOnOutsidePointer);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeOnOutsidePointer);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [showDownloadMenu]);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -2003,7 +2423,7 @@ export default function App() {
 
   function getSelectedLayerBounds() {
     return selectedLayers.map((layer) => {
-      const node = textRefs.current[layer.id];
+      const node = layerRefs.current[layer.id];
       if (node) {
         const parentLayer = node.getLayer();
         const rect = parentLayer
@@ -2023,7 +2443,9 @@ export default function App() {
         x: layer.x,
         y: layer.y,
         width: layer.width,
-        height: Math.max(layer.fontSize, layer.fontSize * layer.lineHeight)
+        height: isShapeLayer(layer)
+          ? layer.height || layer.width
+          : Math.max(layer.fontSize, layer.fontSize * layer.lineHeight)
       };
     });
   }
@@ -2187,18 +2609,19 @@ export default function App() {
     setSelectedLayerIds([layer.id]);
   }
 
-  function addFreeTextLayer(x = 120, y = 120) {
+  function addFreeTextLayer(x = 120, y = 120, content = "Text", fontSize = DEFAULT_ADDED_TEXT_FONT_SIZE) {
     if (!canEditWorkspace) return;
     const layer: TextLayer = {
       id: uid("layer"),
-      name: "Free text",
+      name: content.trim() || "Free text",
+      kind: "text",
       column: "",
-      content: "Text",
+      content,
       x,
       y,
       width: Math.max(80, Math.min(420, template.width - x - 32)),
       fontFamily: availableFonts[0],
-      fontSize: DEFAULT_ADDED_TEXT_FONT_SIZE,
+      fontSize,
       fontWeight: "700",
       color: "#071025",
       align: "left",
@@ -2212,6 +2635,131 @@ export default function App() {
       layers: [...current.layers, layer]
     }));
     setSelectedLayerIds([layer.id]);
+    setActiveCanvasTool("move");
+  }
+
+  function addShapeLayer(shapeVariant: ShapeVariant) {
+    if (!canEditWorkspace) return;
+    const size = shapeVariant === "frame" ? 280 : 220;
+    const x = Math.max(32, Math.round((template.width - size) / 2));
+    const y = Math.max(32, Math.round((template.height - size) / 2));
+    const layer: TextLayer = {
+      id: uid("shape"),
+      name:
+        shapeVariant === "frame"
+          ? "Frame"
+          : shapeVariant === "circle"
+            ? "Circle"
+            : "Shape",
+      kind: "shape",
+      shapeVariant,
+      column: "",
+      x,
+      y,
+      width: size,
+      height: size,
+      fontFamily: availableFonts[0],
+      fontSize: DEFAULT_ADDED_TEXT_FONT_SIZE,
+      fontWeight: "700",
+      color: "#071025",
+      fill: shapeVariant === "frame" ? "#eef7ff" : "#8b3dff",
+      stroke: shapeVariant === "frame" ? "#8b3dff" : "#6d28d9",
+      strokeWidth: 0,
+      cornerRadius: shapeVariant === "circle" ? size / 2 : shapeVariant === "frame" ? 28 : 0,
+      opacity: 1,
+      align: "left",
+      lineHeight: 1.16,
+      letterSpacing: 0,
+      textTransform: "none"
+    };
+    updateTemplate((current) => ({
+      ...current,
+      updatedAt: new Date().toISOString(),
+      layers: [...current.layers, layer]
+    }));
+    setSelectedLayerIds([layer.id]);
+    setActiveCanvasTool("move");
+  }
+
+  function placeImageInFrame(
+    image: TemplateImage,
+    targetLayerId?: string,
+    dropPoint?: { x: number; y: number }
+  ) {
+    const dataUrl = getTemplateLibraryImage(image);
+    if (!dataUrl || !canEditWorkspace) return;
+    const targetFrame =
+      (targetLayerId
+        ? template.layers.find((layer) => layer.id === targetLayerId && isShapeLayer(layer))
+        : null) || selectedLayers.find((layer) => isShapeLayer(layer));
+    if (targetFrame) {
+      updateTemplate((current) => ({
+        ...current,
+        updatedAt: new Date().toISOString(),
+        layers: current.layers.map((layer) =>
+          layer.id === targetFrame.id
+            ? {
+                ...layer,
+                kind: "shape",
+                shapeVariant: layer.shapeVariant || "frame",
+                imageDataUrl: dataUrl,
+                imageName: image.name,
+                fill: "#ffffff",
+                stroke: layer.stroke || "#8b3dff",
+                strokeWidth: layer.strokeWidth ?? 0,
+                cornerRadius: layer.cornerRadius ?? 28
+              }
+            : layer
+        )
+      }));
+      setSelectedLayerIds([targetFrame.id]);
+      setActiveCanvasTool("move");
+      return;
+    }
+
+    const width = Math.min(360, Math.max(220, Math.round(template.width * 0.32)));
+    const height = Math.round(width * 0.75);
+    const x = Math.max(
+      0,
+      Math.round(dropPoint ? dropPoint.x - width / 2 : (template.width - width) / 2)
+    );
+    const y = Math.max(
+      0,
+      Math.round(dropPoint ? dropPoint.y - height / 2 : (template.height - height) / 2)
+    );
+    const layer: TextLayer = {
+      id: uid("frame"),
+      name: image.name || "Image frame",
+      kind: "shape",
+      shapeVariant: "frame",
+      column: "",
+      x,
+      y,
+      width,
+      height,
+      fontFamily: availableFonts[0],
+      fontSize: DEFAULT_ADDED_TEXT_FONT_SIZE,
+      fontWeight: "700",
+      color: "#071025",
+      fill: "#ffffff",
+      stroke: "#8b3dff",
+      strokeWidth: 0,
+      cornerRadius: 28,
+      opacity: 1,
+      imageDataUrl: dataUrl,
+      imageName: image.name,
+      align: "left",
+      lineHeight: 1.16,
+      letterSpacing: 0,
+      textTransform: "none"
+    };
+    updateTemplate((current) => ({
+      ...current,
+      updatedAt: new Date().toISOString(),
+      layers: [...current.layers, layer]
+    }));
+    setSelectedLayerIds([layer.id]);
+    setActiveCanvasTool("move");
   }
 
   function removeSelectedLayer() {
@@ -3036,16 +3584,49 @@ export default function App() {
     setShowDatasetLibraryModal(true);
   }
 
-  function handleColumnDrop(event: React.DragEvent<HTMLDivElement>) {
+  function getDropPoint(event: React.DragEvent<HTMLDivElement>) {
+    const rect = stageRef.current?.container().getBoundingClientRect();
+    if (!rect) return null;
+    return {
+      x: Math.max(0, Math.round((event.clientX - rect.left) / stageScale)),
+      y: Math.max(0, Math.round((event.clientY - rect.top) / stageScale))
+    };
+  }
+
+  function findShapeLayerAtPoint(point: { x: number; y: number }) {
+    return [...template.layers]
+      .reverse()
+      .find((layer) => {
+        if (!isShapeLayer(layer)) return false;
+        const width = layer.width;
+        const height = layer.height || layer.width;
+        return (
+          point.x >= layer.x &&
+          point.x <= layer.x + width &&
+          point.y >= layer.y &&
+          point.y <= layer.y + height
+        );
+      });
+  }
+
+  function handleCanvasDrop(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
     if (!canEditWorkspace) return;
+    const point = getDropPoint(event);
+    if (!point) return;
+
+    const imageId = event.dataTransfer.getData("application/x-template-image-id");
+    if (imageId) {
+      const image = appState.templateImages.find((item) => item.id === imageId);
+      if (!image) return;
+      const targetFrame = findShapeLayerAtPoint(point);
+      placeImageInFrame(image, targetFrame?.id, point);
+      return;
+    }
+
     const column = event.dataTransfer.getData("text/column");
     if (!column) return;
-    const rect = stageRef.current?.container().getBoundingClientRect();
-    if (!rect) return;
-    const x = Math.max(0, Math.round((event.clientX - rect.left) / stageScale));
-    const y = Math.max(0, Math.round((event.clientY - rect.top) / stageScale));
-    addTextLayer(column, x, y);
+    addTextLayer(column, point.x, point.y);
   }
 
   function getLogicalPointer() {
@@ -3110,14 +3691,9 @@ export default function App() {
     } else {
       const selectedIds = template.layers
         .filter((layer) => {
-          const node = textRefs.current[layer.id];
+          const node = layerRefs.current[layer.id];
           if (!node) return false;
-          const box = {
-            x: node.x(),
-            y: node.y(),
-            width: node.width(),
-            height: node.height()
-          };
+          const box = node.getClientRect();
           return boxesIntersect(normalizedSelection, box);
         })
         .map((layer) => layer.id);
@@ -3162,7 +3738,7 @@ export default function App() {
       startY: event.target.y(),
       positions: selectedLayerIds.reduce<Record<string, { x: number; y: number }>>(
         (positions, id) => {
-          const node = textRefs.current[id];
+          const node = layerRefs.current[id];
           if (node) positions[id] = { x: node.x(), y: node.y() };
           return positions;
         },
@@ -3178,7 +3754,7 @@ export default function App() {
     const deltaY = event.target.y() - groupDrag.startY;
     selectedLayerIds.forEach((id) => {
       if (id === layerId) return;
-      const node = textRefs.current[id];
+      const node = layerRefs.current[id];
       const position = groupDrag.positions[id];
       if (node && position) {
         node.position({ x: position.x + deltaX, y: position.y + deltaY });
@@ -3192,7 +3768,7 @@ export default function App() {
     if (groupDrag && groupDrag.activeLayerId === layerId) {
       const nextPositions = selectedLayerIds.reduce<Record<string, { x: number; y: number }>>(
         (positions, id) => {
-          const node = textRefs.current[id];
+          const node = layerRefs.current[id];
           if (node) positions[id] = { x: Math.round(node.x()), y: Math.round(node.y()) };
           return positions;
         },
@@ -3224,22 +3800,74 @@ export default function App() {
     }));
   }
 
-  function normalizeLayerResizeNode(node: Konva.Text) {
-    const nextWidth = Math.max(80, node.width() * node.scaleX());
+  function normalizeLayerResizeNode(
+    node: Konva.Text | Konva.Rect | Konva.Image,
+    layer: TextLayer | undefined
+  ) {
+    const nextWidth = Math.max(isShapeLayer(layer) ? 24 : 80, node.width() * node.scaleX());
     node.width(nextWidth);
+    if (isShapeLayer(layer)) {
+      node.height(Math.max(24, node.height() * node.scaleY()));
+    }
+    if (node instanceof Konva.Image) {
+      const image = node.image() as { width?: number; height?: number } | undefined;
+      if (image?.width && image?.height) {
+        const nextCrop = getCoverCrop(
+          { width: image.width, height: image.height },
+          node.width(),
+          node.height()
+        );
+        if (nextCrop) node.crop(nextCrop);
+      }
+    }
     node.scaleX(1);
     node.scaleY(1);
     node.getLayer()?.batchDraw();
     transformerRef.current?.forceUpdate();
+    return {
+      width: node.width(),
+      height: isShapeLayer(layer) ? node.height() : undefined
+    };
   }
 
-  function handleLayerTransform(event: Konva.KonvaEventObject<Event>) {
-    normalizeLayerResizeNode(event.target as Konva.Text);
+  function updateShapeToolbarPreview(width: number, height: number, cornerRadius: number) {
+    if (shapeWidthInputRef.current) shapeWidthInputRef.current.value = String(Math.round(width));
+    if (shapeHeightInputRef.current) shapeHeightInputRef.current.value = String(Math.round(height));
+    if (shapeRadiusInputRef.current) {
+      shapeRadiusInputRef.current.value = String(Math.round(cornerRadius));
+    }
+  }
+
+  function handleLayerTransform(layerId: string, event: Konva.KonvaEventObject<Event>) {
+    const layer = template.layers.find((item) => item.id === layerId);
+    const nextSize = normalizeLayerResizeNode(
+      event.target as Konva.Text | Konva.Rect | Konva.Image,
+      layer
+    );
+    if (isShapeLayer(layer) && nextSize.height) {
+      updateShapeToolbarPreview(
+        nextSize.width,
+        nextSize.height,
+        layer.shapeVariant === "circle"
+          ? Math.min(nextSize.width, nextSize.height) / 2
+          : layer.cornerRadius || 0
+      );
+    }
   }
 
   function handleLayerTransformEnd(layerId: string, event: Konva.KonvaEventObject<Event>) {
-    const node = event.target as Konva.Text;
-    normalizeLayerResizeNode(node);
+    const node = event.target as Konva.Text | Konva.Rect | Konva.Image;
+    const layer = template.layers.find((item) => item.id === layerId);
+    const nextSize = normalizeLayerResizeNode(node, layer);
+    if (isShapeLayer(layer) && nextSize.height) {
+      updateShapeToolbarPreview(
+        nextSize.width,
+        nextSize.height,
+        layer.shapeVariant === "circle"
+          ? Math.min(nextSize.width, nextSize.height) / 2
+          : layer.cornerRadius || 0
+      );
+    }
     updateTemplate((current) => ({
       ...current,
       updatedAt: new Date().toISOString(),
@@ -3249,7 +3877,8 @@ export default function App() {
               ...item,
               x: Math.round(node.x()),
               y: Math.round(node.y()),
-              width: Math.round(node.width())
+              width: Math.round(node.width()),
+              ...(isShapeLayer(item) ? { height: Math.round(node.height()) } : {})
             }
           : item
       )
@@ -3260,6 +3889,11 @@ export default function App() {
     setZoomLevel((current) =>
       Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number((current + delta).toFixed(2))))
     );
+  }
+
+  function setZoomFromSlider(value: string) {
+    const nextZoom = Number(value) / 100;
+    setZoomLevel(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number(nextZoom.toFixed(2)))));
   }
 
   function handleCanvasWheel(event: React.WheelEvent<HTMLDivElement>) {
@@ -3318,7 +3952,7 @@ export default function App() {
 
   async function exportImage(pixelRatio: 1 | 0.75 | 0.5, mimeType: "image/png" | "image/jpeg") {
     const stage = stageRef.current;
-    if (!stage || isExporting) return;
+    if (!stage || isExporting) return false;
     setIsExporting(true);
     const transformer = transformerRef.current;
     transformer?.visible(false);
@@ -3342,6 +3976,7 @@ export default function App() {
         dataUrl,
         `${getExportName(template, selectedRow, dataset.keyColumn)}_${sizeLabel}.${ext}`
       );
+      return true;
     } finally {
       stage.scale({ x: currentScale, y: currentScale });
       stage.size({ width: currentWidth, height: currentHeight });
@@ -3349,6 +3984,27 @@ export default function App() {
       transformer?.getLayer()?.batchDraw();
       setIsExporting(false);
     }
+  }
+
+  function showDownloadToast(message: string) {
+    setDownloadToast(message);
+    if (downloadToastTimeoutRef.current) {
+      window.clearTimeout(downloadToastTimeoutRef.current);
+    }
+    downloadToastTimeoutRef.current = window.setTimeout(() => {
+      setDownloadToast("");
+      downloadToastTimeoutRef.current = null;
+    }, 2400);
+  }
+
+  async function downloadFromTopbar() {
+    setShowDownloadMenu(false);
+    showDownloadToast("Đang tải ảnh...");
+    const didDownload = await exportImage(
+      Number(exportScale) as 1 | 0.75 | 0.5,
+      exportMimeType
+    );
+    showDownloadToast(didDownload ? "Đã tải ảnh xuống" : "Không thể tải ảnh");
   }
 
   function resetLocalData() {
@@ -3406,334 +4062,636 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <aside className="side-nav">
-        <div className="side-brand">
-          <img src="https://eventci.vercel.app/favicon.ico" alt="" className="brand-icon" />
-          <div>
-            <div className="brand-name">OneHousing</div>
-            <div className="brand-sub">Công cụ tạo ảnh chỉ căn</div>
-          </div>
-        </div>
+      <aside className="side-nav canva-rail">
+        <button
+          type="button"
+          className={activeDesignPanel === "elements" ? "rail-tab active" : "rail-tab"}
+          title="Elements"
+          aria-pressed={activeDesignPanel === "elements"}
+          onClick={() => setActiveDesignPanel("elements")}
+        >
+          <Shapes size={24} />
+          <span>Elements</span>
+        </button>
+        <button
+          type="button"
+          className={activeDesignPanel === "images" ? "rail-tab active" : "rail-tab"}
+          title="Images"
+          aria-pressed={activeDesignPanel === "images"}
+          onClick={() => setActiveDesignPanel("images")}
+        >
+          <ImageUp size={24} />
+          <span>Images</span>
+        </button>
+        <button
+          type="button"
+          className={activeDesignPanel === "text" ? "rail-tab active" : "rail-tab"}
+          title="Text"
+          aria-pressed={activeDesignPanel === "text"}
+          onClick={() => setActiveDesignPanel("text")}
+        >
+          <Type size={24} />
+          <span>Text</span>
+        </button>
 
-        <div className="side-section page-section">
-          <div className="page-section-head">
-            <div className="side-section-title">Trang</div>
-            <button
-              type="button"
-              className="page-add-btn"
-              title="Thêm trang"
-              aria-label="Thêm trang"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                addPage();
-              }}
-            >
-              <Plus size={16} />
-            </button>
-          </div>
-          <div className="page-list">
-            {appState.templates.map((item) => (
-              <div
+        <div className="rail-pages">
+          <button
+            type="button"
+            className="rail-icon-btn"
+            title="Add page"
+            aria-label="Add page"
+            onClick={addPage}
+          >
+            <Plus size={20} />
+          </button>
+          <div className="rail-page-dots" aria-label="Pages">
+            {appState.templates.map((item, index) => (
+              <button
                 key={item.id}
+                type="button"
                 className={
                   item.id === appState.activeTemplateId && !isManagementPageOpen
-                    ? "page-row active"
-                    : "page-row"
+                    ? "rail-page-dot active"
+                    : "rail-page-dot"
                 }
+                title={item.name}
                 onClick={() => activatePage(item.id)}
               >
-                {editingPageId === item.id ? (
-                  <input
-                    value={item.name}
-                    autoFocus
-                    onClick={(event) => event.stopPropagation()}
-                    onChange={(event) => renameTemplate(item.id, event.target.value)}
-                    onBlur={(event) => finishEditingPage(item.id, event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.currentTarget.blur();
-                      }
-                      if (event.key === "Escape") {
-                        setEditingPageId(null);
-                      }
-                    }}
-                  aria-label={`Tên page ${item.name}`}
-                  />
-                ) : (
-                  <button
-                    type="button"
-                    className="page-name-btn"
-                    title={item.name}
-                    onDoubleClick={(event) => {
-                      event.stopPropagation();
-                      activatePage(item.id);
-                      setEditingPageId(item.id);
-                    }}
-                  >
-                    {item.name}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="page-delete-btn"
-                  title="Xóa trang"
-                  disabled={appState.templates.length <= 1}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setPagePendingDeleteId(item.id);
-                  }}
-                >
-                  <X size={15} />
-                </button>
-              </div>
+                {index + 1}
+              </button>
             ))}
           </div>
         </div>
 
         {isAdmin ? (
-          <div className="side-footer">
-              <div
-                ref={settingsMenuRef}
-                className={showSettingsMenu ? "settings-menu-wrap open" : "settings-menu-wrap"}
-              >
-                <button
-                  type="button"
-                  className={showSettingsMenu ? "side-tab on" : "side-tab"}
-                  aria-expanded={showSettingsMenu}
-                  onClick={() => setShowSettingsMenu((current) => !current)}
-                >
-                  <Settings size={18} />
-                  Cài đặt
-                  <ChevronDown className="settings-tab-caret" size={16} />
+          <div className="rail-admin" ref={settingsMenuRef}>
+            <button
+              type="button"
+              className={showSettingsMenu ? "rail-icon-btn active" : "rail-icon-btn"}
+              title="Settings"
+              aria-expanded={showSettingsMenu}
+              onClick={() => setShowSettingsMenu((current) => !current)}
+            >
+              <Settings size={20} />
+            </button>
+            {showSettingsMenu ? (
+              <div className="rail-popover" role="menu">
+                <button type="button" onClick={openTemplateLibraryModal}>
+                  <ImageUp size={16} />
+                  Images
                 </button>
-                <div className="settings-submenu" role="menu">
-                  <button
-                    type="button"
-                    className="settings-subtab"
-                    onClick={() => {
-                      setShowSettingsMenu(false);
-                      openTemplateLibraryModal();
-                    }}
-                  >
-                    <ImageUp size={17} />
-                    Ảnh mẫu
-                  </button>
-                  <button
-                    type="button"
-                    className="settings-subtab"
-                    onClick={() => {
-                      setShowSettingsMenu(false);
-                      openDatasetLibraryModal();
-                    }}
-                  >
-                    <FileSpreadsheet size={17} />
-                    Dữ liệu
-                  </button>
-                  <button
-                    type="button"
-                    className="settings-subtab"
-                    onClick={() => {
-                      setShowSettingsMenu(false);
-                      openFontLibraryModal();
-                    }}
-                  >
-                    <Type size={17} />
-                    Phông chữ
-                  </button>
-                </div>
+                <button type="button" onClick={openDatasetLibraryModal}>
+                  <FileSpreadsheet size={16} />
+                  Data
+                </button>
+                <button type="button" onClick={openFontLibraryModal}>
+                  <Type size={16} />
+                  Fonts
+                </button>
+                <button type="button" onClick={openAdminSettings}>
+                  <BadgeCheck size={16} />
+                  Account
+                </button>
+                <button type="button" onClick={logoutAdmin}>
+                  <LogOut size={16} />
+                  Logout
+                </button>
               </div>
-              <button type="button" className="side-link" onClick={openAdminSettings}>
-                <BadgeCheck size={16} />
-                Đổi mật khẩu
-              </button>
-              <button className="side-link" type="button" onClick={logoutAdmin}>
-                <LogOut size={18} />
-                Đăng xuất
-              </button>
+            ) : null}
           </div>
         ) : null}
       </aside>
 
       <main className="main-panel">
-        <header className="admin-header">
-          <div className="admin-header-main">
-            <p className="page-size-title">
-              {template.name} · {template.width} x {template.height}px
-            </p>
+        <header className="admin-header canva-topbar">
+          <div className="topbar-left">
+            <img src="https://eventci.vercel.app/favicon.ico" alt="" className="topbar-logo" />
+            <div className="history-controls topbar-history" aria-label="Undo and redo">
+              <button
+                type="button"
+                className="history-btn"
+                title="Undo (Ctrl+Z)"
+                onClick={undoLastChange}
+                disabled={!canUndo}
+              >
+                <Undo2 size={17} />
+              </button>
+              <button
+                type="button"
+                className="history-btn"
+                title="Redo (Ctrl+Y)"
+                onClick={redoLastChange}
+                disabled={!canRedo}
+              >
+                <Redo2 size={17} />
+              </button>
+            </div>
           </div>
-          <div className={`cloud-sync-pill ${cloudSync.status}`}>
-            <Save size={15} />
-            {cloudSync.message}
+          <div className="topbar-title">{template.name} - Facebook Post</div>
+          <div className="topbar-right">
+            <div className={`cloud-sync-pill ${cloudSync.status}`}>
+              <Save size={15} />
+              {cloudSync.message}
+            </div>
+            <div className="topbar-download-wrap" ref={downloadMenuRef}>
+              <button
+                type="button"
+                className={showDownloadMenu ? "topbar-download-btn active" : "topbar-download-btn"}
+                disabled={isExporting}
+                aria-expanded={showDownloadMenu}
+                onClick={() => setShowDownloadMenu((current) => !current)}
+              >
+                <Download size={17} />
+                Tải xuống
+              </button>
+              {showDownloadMenu ? (
+                <div className="download-menu" role="dialog" aria-label="Tải ảnh">
+                  <div className="download-menu-title">Tải ảnh</div>
+                  <div className="download-menu-grid">
+                    <div className="form-group">
+                      <label>Loại file</label>
+                      <CustomSelect
+                        value={exportMimeType}
+                        options={[
+                          { value: "image/png", label: "PNG" },
+                          { value: "image/jpeg", label: "JPG" }
+                        ]}
+                        onChange={(nextValue) =>
+                          setExportMimeType(nextValue as "image/png" | "image/jpeg")
+                        }
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Kích cỡ</label>
+                      <CustomSelect
+                        value={exportScale}
+                        options={[
+                          { value: "1", label: "1x" },
+                          { value: "0.75", label: "0.75x" },
+                          { value: "0.5", label: "0.5x" }
+                        ]}
+                        onChange={(nextValue) =>
+                          setExportScale(nextValue as "1" | "0.5" | "0.75")
+                        }
+                      />
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="download-menu-btn"
+                    disabled={isExporting}
+                    onClick={downloadFromTopbar}
+                  >
+                    <Download size={18} />
+                    Tải xuống
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </div>
         </header>
+
+        {downloadToast ? (
+          <div className="download-toast" role="status" aria-live="polite">
+            <Download size={17} />
+            {downloadToast}
+          </div>
+        ) : null}
 
         {storageWarning ? <div className="storage-warning">{storageWarning}</div> : null}
 
         <section className="workspace-grid">
-          <section className="left-panel panel">
-            <div className="panel-head">
-              <div>
-                <h2>Dữ liệu căn</h2>
-                <p>
-                  {hasSelectedDataset
-                    ? `${dataset.rows.length} dòng · ${dataset.columns.length} cột`
-                    : "Chưa chọn bộ dữ liệu"}
-                </p>
-              </div>
-              <Columns3 size={20} />
-            </div>
+          <section className="left-panel panel design-panel">
+            {activeDesignPanel === "elements" ? (
+              <>
+                <div className="canva-search">
+                  <Plus size={20} />
+                  <span>Describe your ideal element</span>
+                  <Search size={18} />
+                </div>
 
-            <div className="form-group">
-              <label>Thêm ảnh</label>
-              {template.backgroundDataUrl ? (
-                <div className="selected-template-preview">
-                  <img src={template.backgroundDataUrl} alt={template.name} />
-                  <button
-                    type="button"
-                    className="selected-template-delete"
-                    title="Bỏ ảnh hiện tại"
-                    aria-label="Bỏ ảnh hiện tại"
-                    onClick={removeCurrentTemplateImage}
-                  >
-                    <X size={15} />
+                <div className="design-action-row">
+                  <button type="button" className="generate-btn">
+                    <ImageUp size={18} />
+                    Generate
                   </button>
-                  <button
-                    type="button"
-                    className="selected-template-change"
-                    onClick={openTemplatePickerModal}
-                  >
-                    Thay ảnh
+                  <button type="button" className="search-purple-btn">Search</button>
+                </div>
+
+                <div className="section-label">Browse categories</div>
+                <div className="element-category-grid">
+                  <button type="button" className="element-card" onClick={() => addShapeLayer("frame")}>
+                    <div className="element-preview frame-preview">
+                      <div />
+                    </div>
+                    <span>Frames</span>
+                  </button>
+                  <button type="button" className="element-card" onClick={() => addShapeLayer("rect")}>
+                    <div className="element-preview shape-preview square-preview">
+                      <Square size={34} />
+                    </div>
+                    <span>Shape</span>
+                  </button>
+                  <button type="button" className="element-card" onClick={() => addShapeLayer("circle")}>
+                    <div className="element-preview shape-preview circle-preview">
+                      <Circle size={38} />
+                    </div>
+                    <span>Circle</span>
                   </button>
                 </div>
-              ) : (
-                <button
-                  type="button"
-                  className="btn full"
-                  onClick={openTemplatePickerModal}
-                >
-                  <ImageUp size={18} />
-                  Thêm ảnh
-                </button>
-              )}
-            </div>
 
-            <div className="form-group">
-              <label>Bộ dữ liệu</label>
-              <CustomSelect
-                value={dataset.id}
-                placeholder="Chọn bộ dữ liệu"
-                options={appState.datasets.map((item) => ({
-                  value: item.id,
-                  label: item.name
-                }))}
-                onChange={(nextValue) => {
-                  setAppState((current) => ({
-                    ...current,
-                    activeDatasetId: nextValue
-                  }));
-                  setSelectedRowIndex(0);
-                }}
-              />
-            </div>
+                <div className="design-section-divider" />
 
-            {hasSelectedDataset ? (
-              <>
                 <div className="form-group">
-                  <label>Mã căn</label>
+                  <label>Background image</label>
+                  {template.backgroundDataUrl ? (
+                    <div className="selected-template-preview">
+                      <img src={template.backgroundDataUrl} alt={template.name} />
+                      <button
+                        type="button"
+                        className="selected-template-delete"
+                        title="Remove current image"
+                        aria-label="Remove current image"
+                        onClick={removeCurrentTemplateImage}
+                      >
+                        <X size={15} />
+                      </button>
+                      <button
+                        type="button"
+                        className="selected-template-change"
+                        onClick={openTemplatePickerModal}
+                      >
+                        Change
+                      </button>
+                    </div>
+                  ) : (
+                    <button type="button" className="btn full" onClick={openTemplatePickerModal}>
+                      <ImageUp size={18} />
+                      Add image
+                    </button>
+                  )}
+                </div>
+              </>
+            ) : activeDesignPanel === "images" ? (
+              <>
+                <div className="panel-head compact">
+                  <div>
+                    <h2>Images</h2>
+                    <p>Choose a folder, then click an image to place it into a frame</p>
+                  </div>
+                  <ImageUp size={20} />
+                </div>
+
+                <div className="form-group">
+                  <label>Folder</label>
                   <CustomSelect
-                    value={String(selectedRowIndex)}
-                    options={dataset.rows.map((row, index) => ({
-                      value: String(index),
-                      label: row[dataset.keyColumn] || `Dòng ${index + 1}`
+                    value={activeImageFolderId}
+                    options={flattenedTemplateFolders.map((folder) => ({
+                      value: folder.id,
+                      label: `${folder.depth ? "  ".repeat(folder.depth) : ""}${folder.name}`
                     }))}
-                    onChange={(nextValue) => setSelectedRowIndex(Number(nextValue))}
-                    searchable
-                    searchPlaceholder="Tìm mã căn"
+                    onChange={setSelectedImageFolderId}
                   />
                 </div>
 
-                <div className="column-section">
-                  <div className="section-label">Cột dữ liệu</div>
-                  <div className="column-grid">
-                    {dataset.columns.map((column) => (
+                <div className="image-drop-hint">
+                  {selectionHasShape
+                    ? "Drag an image into the selected frame, or click to replace it."
+                    : "Drag an image into a frame, or click to create a new frame."}
+                </div>
+
+                {imagesInActiveFolder.length ? (
+                  <div className="image-library-grid">
+                    {imagesInActiveFolder.map((item) => (
                       <button
                         type="button"
-                        key={column}
-                        className="column-chip"
+                        key={item.id}
+                        className="image-library-card"
+                        title={item.name}
                         draggable={canEditWorkspace}
-                        onDragStart={(event) =>
-                          event.dataTransfer.setData("text/column", column)
-                        }
-                        onClick={() => addTextLayer(column)}
-                        disabled={!canEditWorkspace}
+                        onDragStart={(event) => {
+                          event.dataTransfer.effectAllowed = "copy";
+                          event.dataTransfer.setData("application/x-template-image-id", item.id);
+                          event.dataTransfer.setData("text/plain", item.name);
+                        }}
+                        onClick={() => placeImageInFrame(item)}
                       >
-                        <Plus size={14} />
-                        {column}
+                        <img src={getTemplateLibraryImage(item)} alt={item.name} />
+                        <span>{item.name}</span>
                       </button>
                     ))}
                   </div>
-                </div>
-              </>
-            ) : null}
-          </section>
+                ) : (
+                  <div className="image-library-empty">
+                    <ImageUp size={24} />
+                    <span>No images in this folder</span>
+                  </div>
+                )}
 
+                {isAdmin ? (
+                  <button type="button" className="btn full image-manager-btn" onClick={openTemplateLibraryModal}>
+                    <FolderPlus size={18} />
+                    Manage image folders
+                  </button>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <div className="panel-head compact">
+                  <div>
+                    <h2>Text</h2>
+                    <p>Add text to the canvas</p>
+                  </div>
+                  <Type size={20} />
+                </div>
+
+                <div className="text-preset-list">
+                  <button type="button" onClick={() => addFreeTextLayer(120, 120, "Add a heading", 56)}>
+                    Add a heading
+                  </button>
+                  <button type="button" onClick={() => addFreeTextLayer(120, 190, "Add a subheading", 34)}>
+                    Add a subheading
+                  </button>
+                  <button type="button" onClick={() => addFreeTextLayer(120, 250, "Add a little bit of body text", 24)}>
+                    Add body text
+                  </button>
+                </div>
+
+                <div className="design-section-divider" />
+
+                <div className="form-group">
+                  <label>Dataset</label>
+                  <CustomSelect
+                    value={dataset.id}
+                    placeholder="Choose dataset"
+                    options={appState.datasets.map((item) => ({
+                      value: item.id,
+                      label: item.name
+                    }))}
+                    onChange={(nextValue) => {
+                      setAppState((current) => ({
+                        ...current,
+                        activeDatasetId: nextValue
+                      }));
+                      setSelectedRowIndex(0);
+                    }}
+                  />
+                </div>
+
+                {hasSelectedDataset ? (
+                  <>
+                    <div className="form-group">
+                      <label>Preview row</label>
+                      <CustomSelect
+                        value={String(selectedRowIndex)}
+                        options={dataset.rows.map((row, index) => ({
+                          value: String(index),
+                          label: row[dataset.keyColumn] || `Row ${index + 1}`
+                        }))}
+                        onChange={(nextValue) => setSelectedRowIndex(Number(nextValue))}
+                        searchable
+                        searchPlaceholder="Search row"
+                      />
+                    </div>
+
+                    <div className="column-section">
+                      <div className="section-label">Data text</div>
+                      <div className="column-grid">
+                        {dataset.columns.map((column) => (
+                          <button
+                            type="button"
+                            key={column}
+                            className="column-chip"
+                            draggable={canEditWorkspace}
+                            onDragStart={(event) =>
+                              event.dataTransfer.setData("text/column", column)
+                            }
+                            onClick={() => addTextLayer(column)}
+                            disabled={!canEditWorkspace}
+                          >
+                            <Plus size={14} />
+                            {column}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                ) : null}
+              </>
+            )}
+          </section>
           <section className="canvas-panel" ref={canvasWrapRef}>
-            <div className="canvas-toolbar">
-              <div className="canvas-toolbar-left">
-              <div className="zoom-controls" aria-label="Điều khiển zoom">
-                <button
-                  type="button"
-                  className="zoom-btn"
-                  title="Thu nhỏ"
-                  onClick={() => changeZoom(-ZOOM_STEP)}
-                  disabled={zoomLevel <= MIN_ZOOM}
-                >
-                  <ZoomOut size={18} />
-                </button>
-                <div className="zoom-value">{zoomPercent}%</div>
-                <button
-                  type="button"
-                  className="zoom-btn"
-                  title="Phóng to"
-                  onClick={() => changeZoom(ZOOM_STEP)}
-                  disabled={zoomLevel >= MAX_ZOOM}
-                >
-                  <ZoomIn size={18} />
-                </button>
-                <button
-                  type="button"
-                  className="fit-btn"
-                  title="Vừa khung"
-                  onClick={fitCanvasToFrame}
-                >
-                  <Maximize2 size={16} />
-                  Vừa khung
-                </button>
-              </div>
-              <div className="history-controls" aria-label="Hoàn tác và làm lại">
-                <button
-                  type="button"
-                  className="history-btn"
-                  title="Undo (Ctrl+Z)"
-                  onClick={undoLastChange}
-                  disabled={!canUndo}
-                >
-                  <Undo2 size={17} />
-                </button>
-                <button
-                  type="button"
-                  className="history-btn"
-                  title="Redo (Ctrl+Y)"
-                  onClick={redoLastChange}
-                  disabled={!canRedo}
-                >
-                  <Redo2 size={17} />
-                </button>
-              </div>
-              </div>
-              <div className="canvas-meta">
-                {selectedRow?.[dataset.keyColumn] || "Xem trước"}
+            <div className="canvas-toolbar canva-property-toolbar">
+              <div className="selection-toolbar" aria-label="Selected layer properties">
+                {selectedLayer ? selectedLayerIsShape ? (
+                  <>
+                    {selectedLayer.imageDataUrl ? (
+                      <div className="toolbar-image-chip" title={selectedLayer.imageName || "Frame image"}>
+                        <img src={selectedLayer.imageDataUrl} alt="" />
+                        <button
+                          type="button"
+                          title="Remove image"
+                          disabled={!canEditWorkspace}
+                          onClick={() => updateSelectedLayer({ imageDataUrl: undefined, imageName: undefined })}
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ) : null}
+
+                    <div className="toolbar-color-field compact-color-field" title="Fill">
+                      <HexColorInput
+                        value={selectedLayer.fill || "#8b3dff"}
+                        disabled={!canEditWorkspace}
+                        onChange={(nextValue) => updateSelectedLayer({ fill: nextValue })}
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      className={selectedLayer.strokeWidth ? "toolbar-toggle active" : "toolbar-toggle"}
+                      disabled={!canEditWorkspace}
+                      onClick={() =>
+                        updateSelectedLayer({
+                          stroke: selectedLayer.stroke || "#8b3dff",
+                          strokeWidth: selectedLayer.strokeWidth ? 0 : 4
+                        })
+                      }
+                    >
+                      {selectedLayer.strokeWidth ? "Stroke" : "Add stroke"}
+                    </button>
+
+                    {selectedLayer.strokeWidth ? (
+                      <>
+                        <div className="toolbar-color-field compact-color-field stroke-color-field" title="Stroke color">
+                          <HexColorInput
+                            value={selectedLayer.stroke || "#8b3dff"}
+                            disabled={!canEditWorkspace}
+                            onChange={(nextValue) => updateSelectedLayer({ stroke: nextValue })}
+                          />
+                        </div>
+                        <label className="toolbar-number-field">
+                          <span>Stroke</span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={40}
+                            value={selectedLayer.strokeWidth}
+                            disabled={!canEditWorkspace}
+                            onChange={(event) => updateSelectedLayer({ strokeWidth: Number(event.target.value) })}
+                          />
+                        </label>
+                      </>
+                    ) : null}
+
+                    <label className="toolbar-number-field">
+                      <span>W</span>
+                      <input
+                        ref={shapeWidthInputRef}
+                        type="number"
+                        min={24}
+                        value={selectedShapeWidth}
+                        disabled={!canEditWorkspace}
+                        onChange={(event) => updateSelectedLayer({ width: Number(event.target.value) })}
+                      />
+                    </label>
+                    <label className="toolbar-number-field">
+                      <span>H</span>
+                      <input
+                        ref={shapeHeightInputRef}
+                        type="number"
+                        min={24}
+                        value={selectedShapeHeight}
+                        disabled={!canEditWorkspace}
+                        onChange={(event) => updateSelectedLayer({ height: Number(event.target.value) })}
+                      />
+                    </label>
+                    <label className="toolbar-number-field">
+                      <span className="toolbar-field-icon" title="Rounded corners">
+                        <SquareRoundCorner size={15} />
+                      </span>
+                      <input
+                        ref={shapeRadiusInputRef}
+                        type="number"
+                        min={0}
+                        max={240}
+                        value={selectedShapeRadius}
+                        disabled={!canEditWorkspace || selectedLayer.shapeVariant === "circle"}
+                        onChange={(event) => updateSelectedLayer({ cornerRadius: Number(event.target.value) })}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="toolbar-icon-btn danger"
+                      title="Delete element"
+                      disabled={!canEditWorkspace}
+                      onClick={removeSelectedLayer}
+                    >
+                      <Trash2 size={17} />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {typeof selectedLayer.content === "string" ? (
+                      <input
+                        className="toolbar-text-input"
+                        value={selectedLayer.content}
+                        disabled={!canEditWorkspace || hasMultiSelection}
+                        onChange={(event) =>
+                          updateSelectedLayer({
+                            content: event.target.value,
+                            name: event.target.value.trim() || "Free text"
+                          })
+                        }
+                      />
+                    ) : (
+                      <div className="toolbar-select element-select">
+                        <CustomSelect
+                          value={selectedLayer.column}
+                          disabled={!canEditWorkspace || hasMultiSelection}
+                          options={dataset.columns.map((column) => ({ value: column, label: column }))}
+                          onChange={(nextValue) => updateSelectedLayer({ column: nextValue, name: nextValue })}
+                        />
+                      </div>
+                    )}
+                    <div className="toolbar-select font-select">
+                      <CustomSelect
+                        value={selectedLayer.fontFamily}
+                        disabled={!canEditWorkspace}
+                        options={availableFonts.map((font) => ({ value: font, label: font }))}
+                        onChange={(nextValue) => updateSelectedLayer({ fontFamily: nextValue })}
+                      />
+                    </div>
+                    <label className="toolbar-number-field compact">
+                      <input
+                        type="number"
+                        min={8}
+                        max={220}
+                        value={selectedLayer.fontSize}
+                        disabled={!canEditWorkspace}
+                        onChange={(event) => updateSelectedLayer({ fontSize: Number(event.target.value) })}
+                      />
+                    </label>
+                    <div className="toolbar-color-field" title="Text color">
+                      <HexColorInput
+                        value={selectedLayer.color}
+                        disabled={!canEditWorkspace}
+                        onChange={(nextValue) => updateSelectedLayer({ color: nextValue })}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className={selectedLayer.fontWeight === "700" ? "toolbar-toggle active" : "toolbar-toggle"}
+                      disabled={!canEditWorkspace}
+                      onClick={() => updateSelectedLayer({ fontWeight: selectedLayer.fontWeight === "700" ? "400" : "700" })}
+                    >
+                      B
+                    </button>
+                    <button
+                      type="button"
+                      className={selectedLayer.fontStyle === "italic" ? "toolbar-toggle active italic" : "toolbar-toggle italic"}
+                      disabled={!canEditWorkspace}
+                      onClick={() => updateSelectedLayer({ fontStyle: selectedLayer.fontStyle === "italic" ? "normal" : "italic" })}
+                    >
+                      I
+                    </button>
+                    <div className="toolbar-segmented">
+                      {(["left", "center", "right"] as const).map((align) => (
+                        <button
+                          type="button"
+                          key={align}
+                          className={selectedLayer.align === align ? "active" : ""}
+                          disabled={!canEditWorkspace}
+                          onClick={() => updateSelectedLayer({ align })}
+                          title={align}
+                        >
+                          {align === "left" ? <AlignLeft size={16} /> : align === "center" ? <AlignCenter size={16} /> : <AlignRight size={16} />}
+                        </button>
+                      ))}
+                    </div>
+                    <label className="toolbar-number-field">
+                      <span>W</span>
+                      <input
+                        type="number"
+                        min={80}
+                        value={Math.round(selectedLayer.width)}
+                        disabled={!canEditWorkspace}
+                        onChange={(event) => updateSelectedLayer({ width: Number(event.target.value) })}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="toolbar-icon-btn danger"
+                      title="Delete layer"
+                      disabled={!canEditWorkspace}
+                      onClick={removeSelectedLayer}
+                    >
+                      <Trash2 size={17} />
+                    </button>
+                  </>
+                ) : (
+                  <div className="toolbar-empty-state">Select a layer</div>
+                )}
               </div>
             </div>
 
@@ -3750,7 +4708,7 @@ export default function App() {
                 if (event.button === 1) event.preventDefault();
               }}
               onDragOver={(event) => event.preventDefault()}
-              onDrop={handleColumnDrop}
+              onDrop={handleCanvasDrop}
             >
               <div className="canvas-workspace">
                 <div className="stage-stack">
@@ -3791,36 +4749,53 @@ export default function App() {
                       />
                     ) : null}
 
-                    {template.layers.map((layer) => (
-                      <KonvaText
-                        key={layer.id}
-                        ref={(node) => {
-                          if (node) textRefs.current[layer.id] = node;
-                        }}
-                        text={formatLayerValue(layer, selectedRow)}
-                        x={layer.x}
-                        y={layer.y}
-                        width={layer.width}
-                        fontFamily={layer.fontFamily}
-                        fontSize={layer.fontSize}
-                        fontStyle={layerFontStyleValue(layer)}
-                        fill={layer.color}
-                        align={layer.align}
-                        lineHeight={layer.lineHeight}
-                        letterSpacing={layer.letterSpacing}
-                        draggable={canEditWorkspace && activeCanvasTool === "move"}
-                        visible={inlineTextEditor?.layerId !== layer.id}
-                        onMouseDown={(event) => selectLayerFromCanvas(layer.id, event)}
-                        onTap={(event) => selectLayerFromCanvas(layer.id, event)}
-                        onDblClick={(event) => beginInlineFreeTextEdit(layer, event)}
-                        onDblTap={(event) => beginInlineFreeTextEdit(layer, event)}
-                        onDragStart={(event) => handleLayerDragStart(layer.id, event)}
-                        onDragMove={(event) => handleLayerDragMove(layer.id, event)}
-                        onDragEnd={(event) => handleLayerDragEnd(layer.id, event)}
-                        onTransform={handleLayerTransform}
-                        onTransformEnd={(event) => handleLayerTransformEnd(layer.id, event)}
-                      />
-                    ))}
+                    {template.layers.map((layer) =>
+                      isShapeLayer(layer) ? (
+                        <ShapeLayerNode
+                          key={layer.id}
+                          layer={layer}
+                          canDrag={canEditWorkspace && activeCanvasTool === "move"}
+                          setNode={(node) => {
+                            if (node) layerRefs.current[layer.id] = node;
+                          }}
+                          onSelect={(event) => selectLayerFromCanvas(layer.id, event)}
+                          onDragStart={(event) => handleLayerDragStart(layer.id, event)}
+                          onDragMove={(event) => handleLayerDragMove(layer.id, event)}
+                          onDragEnd={(event) => handleLayerDragEnd(layer.id, event)}
+                          onTransform={(event) => handleLayerTransform(layer.id, event)}
+                          onTransformEnd={(event) => handleLayerTransformEnd(layer.id, event)}
+                        />
+                      ) : (
+                        <KonvaText
+                          key={layer.id}
+                          ref={(node) => {
+                            if (node) layerRefs.current[layer.id] = node;
+                          }}
+                          text={formatLayerValue(layer, selectedRow)}
+                          x={layer.x}
+                          y={layer.y}
+                          width={layer.width}
+                          fontFamily={layer.fontFamily}
+                          fontSize={layer.fontSize}
+                          fontStyle={layerFontStyleValue(layer)}
+                          fill={layer.color}
+                          align={layer.align}
+                          lineHeight={layer.lineHeight}
+                          letterSpacing={layer.letterSpacing}
+                          draggable={canEditWorkspace && activeCanvasTool === "move"}
+                          visible={inlineTextEditor?.layerId !== layer.id}
+                          onMouseDown={(event) => selectLayerFromCanvas(layer.id, event)}
+                          onTap={(event) => selectLayerFromCanvas(layer.id, event)}
+                          onDblClick={(event) => beginInlineFreeTextEdit(layer, event)}
+                          onDblTap={(event) => beginInlineFreeTextEdit(layer, event)}
+                          onDragStart={(event) => handleLayerDragStart(layer.id, event)}
+                          onDragMove={(event) => handleLayerDragMove(layer.id, event)}
+                          onDragEnd={(event) => handleLayerDragEnd(layer.id, event)}
+                          onTransform={(event) => handleLayerTransform(layer.id, event)}
+                          onTransformEnd={(event) => handleLayerTransformEnd(layer.id, event)}
+                        />
+                      )
+                    )}
                     {selectionBox.visible ? (
                       <Rect
                         {...normalizeBox(selectionBox)}
@@ -3835,12 +4810,28 @@ export default function App() {
                       ref={transformerRef}
                       visible={activeCanvasTool === "move" && !inlineTextEditor}
                       rotateEnabled={false}
-                      enabledAnchors={["middle-left", "middle-right"]}
+                      enabledAnchors={
+                        selectionHasShape
+                          ? [
+                              "top-left",
+                              "top-center",
+                              "top-right",
+                              "middle-left",
+                              "middle-right",
+                              "bottom-left",
+                              "bottom-center",
+                              "bottom-right"
+                            ]
+                          : ["middle-left", "middle-right"]
+                      }
                       borderStroke={selectedOutlineColor}
                       anchorStroke={selectedOutlineColor}
                       anchorFill="#ffffff"
                       boundBoxFunc={(oldBox, newBox) =>
-                        newBox.width < 80 ? oldBox : newBox
+                        newBox.width < (selectionHasShape ? 24 : 80) ||
+                        newBox.height < (selectionHasShape ? 24 : 8)
+                          ? oldBox
+                          : newBox
                       }
                     />
                   </Layer>
@@ -3909,13 +4900,35 @@ export default function App() {
                 </div>
               </div>
               <div
-                className="canvas-tools floating-canvas-tools"
+                className="canvas-bottom-bar floating-canvas-tools"
                 aria-label="Công cụ canvas"
                 onPointerDown={(event) => event.stopPropagation()}
                 onPointerMove={(event) => event.stopPropagation()}
                 onPointerUp={(event) => event.stopPropagation()}
                 onClick={(event) => event.stopPropagation()}
               >
+                <div className="zoom-controls bottom-zoom-controls" aria-label="Zoom controls">
+                  <input
+                    className="zoom-slider"
+                    type="range"
+                    min={MIN_ZOOM * 100}
+                    max={MAX_ZOOM * 100}
+                    step={5}
+                    value={zoomPercent}
+                    aria-label="Zoom"
+                    onChange={(event) => setZoomFromSlider(event.target.value)}
+                  />
+                  <div className="zoom-value slider-zoom-value">{zoomPercent}%</div>
+                  <button
+                    type="button"
+                    className="fit-btn"
+                    title="Fit"
+                    onClick={fitCanvasToFrame}
+                  >
+                    <Maximize2 size={16} />
+                    Fit
+                  </button>
+                </div>
                 <button
                   type="button"
                   className={activeCanvasTool === "move" ? "tool-btn active" : "tool-btn"}
@@ -3951,375 +4964,6 @@ export default function App() {
             </div>
           </section>
 
-          <aside className="right-panel panel">
-            <div className="panel-head">
-              <div>
-                <h2>Thuộc tính</h2>
-                <p>
-                  {hasMultiSelection
-                    ? `${selectedLayers.length} lớp đang chọn`
-                    : selectedLayer
-                      ? selectedLayer.name
-                      : "Chọn lớp chữ"}
-                </p>
-              </div>
-              <SlidersHorizontal size={20} />
-            </div>
-
-            {selectedLayer ? (
-              <div className="property-stack">
-                {hasMultiSelection ? (
-                  <div className="alignment-tools">
-                    <div className="section-label">Alignment</div>
-                    <div className="alignment-row" aria-label="Căn ngang">
-                      <button
-                        type="button"
-                        className="align-btn"
-                        title="Căn trái"
-                        disabled={!canEditWorkspace}
-                        onClick={() => alignSelectedLayers("horizontal", "start")}
-                      >
-                        <AlignHorizontalJustifyStart size={18} />
-                      </button>
-                      <button
-                        type="button"
-                        className="align-btn"
-                        title="Căn giữa ngang"
-                        disabled={!canEditWorkspace}
-                        onClick={() => alignSelectedLayers("horizontal", "center")}
-                      >
-                        <AlignHorizontalJustifyCenter size={18} />
-                      </button>
-                      <button
-                        type="button"
-                        className="align-btn"
-                        title="Căn phải"
-                        disabled={!canEditWorkspace}
-                        onClick={() => alignSelectedLayers("horizontal", "end")}
-                      >
-                        <AlignHorizontalJustifyEnd size={18} />
-                      </button>
-                    </div>
-                    <div className="alignment-row" aria-label="Căn dọc">
-                      <button
-                        type="button"
-                        className="align-btn"
-                        title="Căn trên"
-                        disabled={!canEditWorkspace}
-                        onClick={() => alignSelectedLayers("vertical", "start")}
-                      >
-                        <AlignVerticalJustifyStart size={18} />
-                      </button>
-                      <button
-                        type="button"
-                        className="align-btn"
-                        title="Căn giữa dọc"
-                        disabled={!canEditWorkspace}
-                        onClick={() => alignSelectedLayers("vertical", "center")}
-                      >
-                        <AlignVerticalJustifyCenter size={18} />
-                      </button>
-                      <button
-                        type="button"
-                        className="align-btn"
-                        title="Căn dưới"
-                        disabled={!canEditWorkspace}
-                        onClick={() => alignSelectedLayers("vertical", "end")}
-                      >
-                        <AlignVerticalJustifyEnd size={18} />
-                      </button>
-                    </div>
-                    <div className="alignment-actions">
-                      <button
-                        type="button"
-                        className="align-action"
-                        disabled={!canEditWorkspace}
-                        onClick={tidySelectedLayers}
-                      >
-                        <Rows3 size={17} />
-                        Dọn đều
-                      </button>
-                      <button
-                        type="button"
-                        className="align-action"
-                        disabled={!canEditWorkspace || selectedLayers.length < 3}
-                        onClick={() => distributeSelectedLayers("vertical")}
-                      >
-                        <Rows3 size={17} />
-                        Dàn đều dọc
-                      </button>
-                      <button
-                        type="button"
-                        className="align-action"
-                        disabled={!canEditWorkspace || selectedLayers.length < 3}
-                        onClick={() => distributeSelectedLayers("horizontal")}
-                      >
-                        <Columns3 size={17} />
-                        Dàn đều ngang
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-                {typeof selectedLayer.content === "string" ? (
-                  <div className="form-group">
-                    <label>Nội dung text</label>
-                    <textarea
-                      rows={3}
-                      value={selectedLayer.content}
-                      disabled={!canEditWorkspace || hasMultiSelection}
-                      onChange={(event) =>
-                        updateSelectedLayer({
-                          content: event.target.value,
-                          name: event.target.value.trim() || "Free text"
-                        })
-                      }
-                    />
-                  </div>
-                ) : (
-                  <div className="form-group">
-                    <label>Gắn cột</label>
-                    <CustomSelect
-                      value={selectedLayer.column}
-                      disabled={!canEditWorkspace || hasMultiSelection}
-                      options={dataset.columns.map((column) => ({
-                        value: column,
-                        label: column
-                      }))}
-                      onChange={(nextValue) =>
-                        updateSelectedLayer({
-                          column: nextValue,
-                          name: nextValue
-                        })
-                      }
-                    />
-                  </div>
-                )}
-
-                <div className="form-group">
-                  <label>Tên font</label>
-                  <CustomSelect
-                    value={selectedLayer.fontFamily}
-                    disabled={!canEditWorkspace}
-                    options={availableFonts.map((font) => ({
-                      value: font,
-                      label: font
-                    }))}
-                    onChange={(nextValue) => updateSelectedLayer({ fontFamily: nextValue })}
-                  />
-                </div>
-
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Font type</label>
-                    <CustomSelect
-                      value={`${selectedLayer.fontWeight}|${selectedLayer.fontStyle || "normal"}`}
-                      disabled={!canEditWorkspace}
-                      options={selectedFontStyleOptions}
-                      onChange={(nextValue) => {
-                        const [fontWeight, fontStyle] = nextValue.split("|");
-                        updateSelectedLayer({
-                          fontWeight: fontWeight || "400",
-                          fontStyle: fontStyle === "italic" ? "italic" : "normal"
-                        });
-                      }}
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Size</label>
-                    <input
-                      type="number"
-                      min={8}
-                      max={220}
-                      value={selectedLayer.fontSize}
-                      disabled={!canEditWorkspace}
-                      onChange={(event) =>
-                        updateSelectedLayer({ fontSize: Number(event.target.value) })
-                      }
-                    />
-                  </div>
-                </div>
-
-                <div className="form-group">
-                  <label>Màu sắc</label>
-                  <HexColorInput
-                    value={selectedLayer.color}
-                    disabled={!canEditWorkspace}
-                    onChange={(nextValue) => updateSelectedLayer({ color: nextValue })}
-                  />
-                </div>
-
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Độ rộng</label>
-                    <input
-                      type="number"
-                      min={80}
-                      value={Math.round(selectedLayer.width)}
-                      disabled={!canEditWorkspace}
-                      onChange={(event) =>
-                        updateSelectedLayer({ width: Number(event.target.value) })
-                      }
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Giãn dòng</label>
-                    <input
-                      type="number"
-                      step={0.05}
-                      min={0.8}
-                      max={2}
-                      value={selectedLayer.lineHeight}
-                      disabled={!canEditWorkspace}
-                      onChange={(event) =>
-                        updateSelectedLayer({ lineHeight: Number(event.target.value) })
-                      }
-                    />
-                  </div>
-                </div>
-
-                <div className="form-group">
-                  <label>Căn lề</label>
-                  <div className="segmented full">
-                    {(["left", "center", "right"] as const).map((align) => (
-                      <button
-                        type="button"
-                        key={align}
-                        className={selectedLayer.align === align ? "on" : ""}
-                        disabled={!canEditWorkspace}
-                        onClick={() => updateSelectedLayer({ align })}
-                      >
-                        {align === "left" ? (
-                          <AlignLeft size={16} />
-                        ) : align === "center" ? (
-                          <AlignCenter size={16} />
-                        ) : (
-                          <AlignRight size={16} />
-                        )}
-                        {align === "left" ? "Trái" : align === "center" ? "Giữa" : "Phải"}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="form-group">
-                  <label>Kiểu chữ</label>
-                  <div className="segmented full">
-                    {(["none", "uppercase", "lowercase"] as const).map((mode) => (
-                      <button
-                        type="button"
-                        key={mode}
-                        className={selectedLayer.textTransform === mode ? "on" : ""}
-                        disabled={!canEditWorkspace}
-                        onClick={() => updateSelectedLayer({ textTransform: mode })}
-                      >
-                        {mode === "none" ? "Gốc" : mode === "uppercase" ? "ABC" : "abc"}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  className="btn danger full"
-                  disabled={!canEditWorkspace}
-                  onClick={removeSelectedLayer}
-                >
-                  <X size={18} />
-                  {hasMultiSelection ? "Xóa nhóm lớp" : "Xóa lớp"}
-                </button>
-              </div>
-            ) : (
-              <div className="empty-state">
-                <TextCursorInput size={26} />
-                <span>Lớp chữ</span>
-              </div>
-            )}
-
-            <div className="export-panel">
-              <div className="section-label">Xuất ảnh</div>
-              <div className="export-controls">
-                <div className="form-row">
-                  <div className="form-group">
-                    <label>Loại file</label>
-                    <CustomSelect
-                      value={exportMimeType}
-                      options={[
-                        { value: "image/png", label: "PNG" },
-                        { value: "image/jpeg", label: "JPG" }
-                      ]}
-                      onChange={(nextValue) =>
-                        setExportMimeType(nextValue as "image/png" | "image/jpeg")
-                      }
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label>Kích thước</label>
-                    <CustomSelect
-                      value={exportScale}
-                      options={[
-                        { value: "1", label: "Gốc" },
-                        { value: "0.75", label: "0.75x" },
-                        { value: "0.5", label: "0.5x" }
-                      ]}
-                      onChange={(nextValue) =>
-                        setExportScale(nextValue as "1" | "0.5" | "0.75")
-                      }
-                    />
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  className="btn blue full"
-                  disabled={isExporting}
-                  onClick={() =>
-                    exportImage(Number(exportScale) as 1 | 0.75 | 0.5, exportMimeType)
-                  }
-                >
-                  <Download size={18} />
-                  Tải xuống
-                </button>
-              </div>
-              <div className="export-grid legacy-export-grid">
-                <button
-                  type="button"
-                  className="btn blue"
-                  disabled={isExporting}
-                  onClick={() => exportImage(1, "image/png")}
-                >
-                  <Download size={18} />
-                  PNG gốc
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={isExporting}
-                  onClick={() => exportImage(0.75, "image/png")}
-                >
-                  <Download size={18} />
-                  PNG 0.75x
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={isExporting}
-                  onClick={() => exportImage(1, "image/jpeg")}
-                >
-                  <Download size={18} />
-                  JPG gốc
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={isExporting}
-                  onClick={() => exportImage(0.5, "image/jpeg")}
-                >
-                  <Download size={18} />
-                  JPG 0.5x
-                </button>
-              </div>
-            </div>
-
-          </aside>
         </section>
       </main>
 
