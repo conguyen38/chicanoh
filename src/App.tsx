@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import Konva from "konva";
 import {
@@ -21,12 +21,16 @@ import {
   AlignVerticalJustifyCenter,
   AlignVerticalJustifyEnd,
   AlignVerticalJustifyStart,
+  ArrowDownUp,
+  ArrowLeft,
+  ArrowUpDown,
   BadgeCheck,
   Check,
   ChevronDown,
   ChevronRight,
   Circle,
   Columns3,
+  Copy,
   Download,
   Eye,
   FileSpreadsheet,
@@ -37,8 +41,10 @@ import {
   Lock,
   LogOut,
   Maximize2,
+  Minus,
   MoreHorizontal,
   MousePointer2,
+  Pencil,
   Pipette,
   Plus,
   Rows3,
@@ -162,6 +168,19 @@ type TemplateImage = {
   createdAt: string;
 };
 
+type PendingTemplateUploadStatus = "ready" | "uploading" | "saved" | "error";
+
+type PendingTemplateUpload = {
+  id: string;
+  name: string;
+  dataUrl: string;
+  width: number;
+  height: number;
+  file: File;
+  status: PendingTemplateUploadStatus;
+  error?: string;
+};
+
 type TemplateFolder = {
   id: string;
   name: string;
@@ -187,6 +206,84 @@ type AppState = {
   activeDatasetId: string;
   customFonts: CustomFont[];
 };
+
+type ProjectListingMode = "home" | "folders" | "designs";
+type ProjectFolderDetailTab = "designs" | "images";
+type ProjectSortOrder = "newest" | "oldest";
+type ProjectViewMode = "grid" | "list";
+type ProjectRoute =
+  | { admin: boolean; kind: "home" }
+  | { admin: boolean; kind: "folders" }
+  | { admin: boolean; kind: "designs" }
+  | { admin: boolean; kind: "folder-detail"; id: string }
+  | { admin: boolean; kind: "design-detail"; id: string };
+
+const PROJECT_PREVIEW_ROWS = 2;
+const PROJECT_FOLDER_DETAIL_ROWS = 4;
+const PROJECT_CONTENT_FALLBACK_WIDTH = 1136;
+const PROJECT_FOLDER_CARD_MIN_WIDTH = 230;
+const PROJECT_FOLDER_CARD_GAP = 26;
+const PROJECT_DESIGN_CARD_MIN_WIDTH = 220;
+const PROJECT_DESIGN_CARD_GAP = 24;
+
+function getGridItemLimit(contentWidth: number, minCardWidth: number, gap: number, rows: number) {
+  const columns = Math.max(1, Math.floor((contentWidth + gap) / (minCardWidth + gap)));
+  return columns * rows;
+}
+
+function getTwoRowPreviewLimit(contentWidth: number, minCardWidth: number, gap: number) {
+  return getGridItemLimit(contentWidth, minCardWidth, gap, PROJECT_PREVIEW_ROWS);
+}
+
+function getProjectRouteFromPath(pathname: string): ProjectRoute | null {
+  const segments = pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  const isAdminProjectRoute = segments[0] === "admin" && segments[1] === "projects";
+  const routeStart = isAdminProjectRoute ? 2 : 1;
+  if (!isAdminProjectRoute && segments[0] !== "projects") return null;
+  if (segments.length === routeStart) return { admin: isAdminProjectRoute, kind: "home" };
+  if (segments[routeStart] === "folders") {
+    return segments[routeStart + 1]
+      ? { admin: isAdminProjectRoute, kind: "folder-detail", id: segments[routeStart + 1] }
+      : { admin: isAdminProjectRoute, kind: "folders" };
+  }
+  if (segments[routeStart] === "designs") {
+    return segments[routeStart + 1]
+      ? { admin: isAdminProjectRoute, kind: "design-detail", id: segments[routeStart + 1] }
+      : { admin: isAdminProjectRoute, kind: "designs" };
+  }
+  return { admin: isAdminProjectRoute, kind: "home" };
+}
+
+function getProjectRootPath(admin = false) {
+  return admin ? "/admin/projects" : "/projects";
+}
+
+function getProjectHomePath(admin = false) {
+  return getProjectRootPath(admin);
+}
+
+function getProjectFolderListingPath(admin = false) {
+  return `${getProjectRootPath(admin)}/folders`;
+}
+
+function getProjectDesignListingPath(admin = false) {
+  return `${getProjectRootPath(admin)}/designs`;
+}
+
+function getProjectFolderPath(folderId: string, admin = false) {
+  return `${getProjectRootPath(admin)}/folders/${encodeURIComponent(folderId)}`;
+}
+
+function getProjectDesignPath(templateId: string, admin = false) {
+  return `${getProjectRootPath(admin)}/designs/${encodeURIComponent(templateId)}`;
+}
+
+function setBrowserPath(path: string, replace = false) {
+  if (typeof window === "undefined") return;
+  const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (currentPath === path) return;
+  window.history[replace ? "replaceState" : "pushState"]({}, "", path);
+}
 
 const FALLBACK_TEXT_LAYER: TextLayer = {
   id: "layer_fallback",
@@ -220,6 +317,9 @@ const EMPTY_DATASET: Dataset = {
   sourceMimeType: undefined,
   sourceSize: undefined
 };
+
+const ONEHOUSING_LOGO_URL = "/onehousing-logo.png";
+const EDITOR_LOGO_URL = "https://eventci.vercel.app/favicon.ico";
 
 declare global {
   interface Window {
@@ -678,6 +778,7 @@ const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 0.15;
 const GUIDE_SNAP_THRESHOLD = 6;
+const MARQUEE_SELECTION_TOLERANCE = 3;
 const GUIDE_EXTENSION = 18;
 const HISTORY_LIMIT = 80;
 const DEFAULT_ADDED_TEXT_FONT_SIZE = 24;
@@ -1149,7 +1250,7 @@ function normalizeTemplate(template: Partial<Template> | null | undefined, index
       ? "Ảnh mẫu OneHousing"
       : typeof template?.name === "string" && template.name.trim()
         ? template.name
-        : `Page ${index + 1}`;
+        : `Trang ${index + 1}`;
   return {
     id: typeof template?.id === "string" && template.id ? template.id : uid("template"),
     name,
@@ -1230,7 +1331,7 @@ function normalizeTemplateFolder(
 function getNextPageName(templates: Template[]) {
   const usedNumbers = new Set<number>();
   templates.forEach((template) => {
-    const match = template.name.trim().match(/^page\s+(\d+)$/i);
+    const match = template.name.trim().match(/^(?:page|trang)\s+(\d+)$/i);
     if (!match) return;
     usedNumbers.add(Number(match[1]));
   });
@@ -1239,7 +1340,19 @@ function getNextPageName(templates: Template[]) {
   while (usedNumbers.has(pageNumber)) {
     pageNumber += 1;
   }
-  return `Page ${pageNumber}`;
+  return `Trang ${pageNumber}`;
+}
+
+function getDuplicateTemplateName(sourceName: string, templates: Template[]) {
+  const existingNames = new Set(templates.map((template) => localizeProjectName(template.name).trim()));
+  const baseName = localizeProjectName(sourceName).trim() || "Thiết kế";
+  let candidate = `${baseName} - Bản sao`;
+  let copyNumber = 2;
+  while (existingNames.has(candidate)) {
+    candidate = `${baseName} - Bản sao ${copyNumber}`;
+    copyNumber += 1;
+  }
+  return candidate;
 }
 
 function flattenTemplateFolders(
@@ -1263,10 +1376,28 @@ function getTemplateLibraryImage(item: TemplateImage | Template) {
   return "dataUrl" in item ? item.dataUrl : item.backgroundDataUrl;
 }
 
+function formatProjectTime(value: string) {
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return "Vừa cập nhật";
+  const diff = Date.now() - timestamp;
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (diff < minute) return "Vừa cập nhật";
+  if (diff < hour) return `${Math.max(1, Math.floor(diff / minute))} phút trước`;
+  if (diff < day) return `${Math.max(1, Math.floor(diff / hour))} giờ trước`;
+  if (diff < day * 30) return `${Math.max(1, Math.floor(diff / day))} ngày trước`;
+  return new Date(value).toLocaleDateString("vi-VN");
+}
+
+function localizeProjectName(name: string) {
+  return name.replace(/^Page(\s+\d+)$/i, "Trang$1");
+}
+
 function createInitialState(): AppState {
   const template: Template = {
     id: "template_default",
-    name: "Page 1",
+    name: "Trang 1",
     folderId: DEFAULT_TEMPLATE_FOLDER_ID,
     width: 1080,
     height: 1350,
@@ -1374,7 +1505,7 @@ function normalizeAppState(parsed: Partial<AppState> | null | undefined): AppSta
   if (!templates.length) {
     templates.push({
       id: uid("template"),
-      name: "Page 1",
+      name: "Trang 1",
       folderId: fallbackFolderId,
       width: 1080,
       height: 1350,
@@ -1562,13 +1693,177 @@ function normalizeBox(box: { x: number; y: number; width: number; height: number
 
 function boxesIntersect(
   a: { x: number; y: number; width: number; height: number },
-  b: { x: number; y: number; width: number; height: number }
+  b: { x: number; y: number; width: number; height: number },
+  tolerance = 0
 ) {
   return (
-    a.x <= b.x + b.width &&
-    a.x + a.width >= b.x &&
-    a.y <= b.y + b.height &&
-    a.y + a.height >= b.y
+    a.x <= b.x + b.width + tolerance &&
+    a.x + a.width >= b.x - tolerance &&
+    a.y <= b.y + b.height + tolerance &&
+    a.y + a.height >= b.y - tolerance
+  );
+}
+
+function ProjectDesignThumbnail({ template }: { template: Template }) {
+  const width = Math.max(1, template.width);
+  const height = Math.max(1, template.height);
+  const clipPrefix = template.id.replace(/[^a-zA-Z0-9_-]/g, "");
+
+  return (
+    <svg
+      className="project-design-preview-svg"
+      viewBox={`0 0 ${width} ${height}`}
+      role="img"
+      aria-label={template.name}
+      preserveAspectRatio="xMidYMid meet"
+    >
+      <rect x="0" y="0" width={width} height={height} fill="#ffffff" />
+      {template.backgroundDataUrl ? (
+        <image
+          href={template.backgroundDataUrl}
+          x="0"
+          y="0"
+          width={width}
+          height={height}
+          preserveAspectRatio="xMidYMid slice"
+        />
+      ) : null}
+      {template.layers.map((layer) => {
+        if (isShapeLayer(layer)) {
+          const layerWidth = Math.max(1, layer.width);
+          const layerHeight = Math.max(1, layer.height || layer.width);
+          const opacity = layer.opacity ?? 1;
+          const strokeWidth = layer.strokeWidth || 0;
+          const fill = layer.fill || "#e9f8ff";
+          const stroke = layer.stroke || "transparent";
+          const radius =
+            layer.shapeVariant === "circle"
+              ? Math.min(layerWidth, layerHeight) / 2
+              : layer.cornerRadius || 0;
+          const clipId = `thumb-${clipPrefix}-${layer.id.replace(/[^a-zA-Z0-9_-]/g, "")}`;
+
+          if (layer.imageDataUrl) {
+            return (
+              <g key={layer.id} opacity={opacity}>
+                <defs>
+                  <clipPath id={clipId}>
+                    {layer.shapeVariant === "circle" ? (
+                      <circle
+                        cx={layer.x + layerWidth / 2}
+                        cy={layer.y + layerHeight / 2}
+                        r={Math.min(layerWidth, layerHeight) / 2}
+                      />
+                    ) : (
+                      <rect
+                        x={layer.x}
+                        y={layer.y}
+                        width={layerWidth}
+                        height={layerHeight}
+                        rx={radius}
+                        ry={radius}
+                      />
+                    )}
+                  </clipPath>
+                </defs>
+                <image
+                  href={layer.imageDataUrl}
+                  x={layer.x}
+                  y={layer.y}
+                  width={layerWidth}
+                  height={layerHeight}
+                  preserveAspectRatio="xMidYMid slice"
+                  clipPath={`url(#${clipId})`}
+                />
+                {strokeWidth ? (
+                  layer.shapeVariant === "circle" ? (
+                    <circle
+                      cx={layer.x + layerWidth / 2}
+                      cy={layer.y + layerHeight / 2}
+                      r={Math.min(layerWidth, layerHeight) / 2}
+                      fill="none"
+                      stroke={stroke}
+                      strokeWidth={strokeWidth}
+                    />
+                  ) : (
+                    <rect
+                      x={layer.x}
+                      y={layer.y}
+                      width={layerWidth}
+                      height={layerHeight}
+                      rx={radius}
+                      ry={radius}
+                      fill="none"
+                      stroke={stroke}
+                      strokeWidth={strokeWidth}
+                    />
+                  )
+                ) : null}
+              </g>
+            );
+          }
+
+          return layer.shapeVariant === "circle" ? (
+            <circle
+              key={layer.id}
+              cx={layer.x + layerWidth / 2}
+              cy={layer.y + layerHeight / 2}
+              r={Math.min(layerWidth, layerHeight) / 2}
+              fill={fill}
+              stroke={stroke}
+              strokeWidth={strokeWidth}
+              opacity={opacity}
+            />
+          ) : (
+            <rect
+              key={layer.id}
+              x={layer.x}
+              y={layer.y}
+              width={layerWidth}
+              height={layerHeight}
+              rx={radius}
+              ry={radius}
+              fill={fill}
+              stroke={stroke}
+              strokeWidth={strokeWidth}
+              opacity={opacity}
+            />
+          );
+        }
+
+        const textStyle: CSSProperties = {
+          width: "100%",
+          height: "100%",
+          color: layer.color,
+          fontFamily: layer.fontFamily,
+          fontSize: layer.fontSize,
+          fontWeight: layer.fontWeight,
+          fontStyle: layer.fontStyle || "normal",
+          lineHeight: layer.lineHeight,
+          letterSpacing: layer.letterSpacing,
+          textAlign: layer.align,
+          overflow: "hidden",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word"
+        };
+        const lineCount = Math.max(1, formatLayerValue(layer, undefined).split(/\r\n|\r|\n/).length);
+        const textHeight = Math.max(layer.height || 0, layer.fontSize * layer.lineHeight * lineCount);
+
+        return (
+          <foreignObject
+            key={layer.id}
+            x={layer.x}
+            y={layer.y}
+            width={Math.max(1, layer.width)}
+            height={Math.max(1, textHeight)}
+            opacity={layer.opacity ?? 1}
+          >
+            <div style={textStyle}>
+              {formatLayerValue(layer, undefined)}
+            </div>
+          </foreignObject>
+        );
+      })}
+    </svg>
   );
 }
 
@@ -1661,7 +1956,18 @@ function isEditableTarget(target: EventTarget | null) {
 }
 
 export default function App() {
-  const [appState, setAppStateBase] = useState<AppState>(() => loadState());
+  const initialProjectRoute =
+    typeof window !== "undefined" ? getProjectRouteFromPath(window.location.pathname) : null;
+  const [appState, setAppStateBase] = useState<AppState>(() => {
+    const loadedState = loadState();
+    if (
+      initialProjectRoute?.kind === "design-detail" &&
+      loadedState.templates.some((item) => item.id === initialProjectRoute.id)
+    ) {
+      return { ...loadedState, activeTemplateId: initialProjectRoute.id };
+    }
+    return loadedState;
+  });
   const isAdminPath = typeof window !== "undefined" && window.location.pathname.startsWith("/admin");
   const [historyVersion, setHistoryVersion] = useState(0);
   const [selectedRowIndex, setSelectedRowIndex] = useState(0);
@@ -1682,7 +1988,9 @@ export default function App() {
   const [showDatasetLibraryModal, setShowDatasetLibraryModal] = useState(false);
   const [showDataImportModal, setShowDataImportModal] = useState(false);
   const [isDataImportInline, setIsDataImportInline] = useState(false);
-  const [showTemplateLibraryModal, setShowTemplateLibraryModal] = useState(false);
+  const [showTemplateLibraryModal, setShowTemplateLibraryModal] = useState(
+    Boolean(initialProjectRoute && initialProjectRoute.kind !== "design-detail")
+  );
   const [showTemplatePickerModal, setShowTemplatePickerModal] = useState(false);
   const [showFontLibraryModal, setShowFontLibraryModal] = useState(false);
   const [fontLibraryError, setFontLibraryError] = useState("");
@@ -1697,14 +2005,29 @@ export default function App() {
   const [selectedPickerTemplateId, setSelectedPickerTemplateId] = useState<string | null>(null);
   const [editingTemplateFolderId, setEditingTemplateFolderId] = useState<string | null>(null);
   const [openTemplateFolderMenuId, setOpenTemplateFolderMenuId] = useState<string | null>(null);
+  const [projectSearch, setProjectSearch] = useState("");
+  const [projectFolderId, setProjectFolderId] = useState<string | null>(
+    initialProjectRoute?.kind === "folder-detail" ? initialProjectRoute.id : null
+  );
+  const [projectRouteAdmin, setProjectRouteAdmin] = useState(Boolean(initialProjectRoute?.admin));
+  const [projectListingMode, setProjectListingMode] = useState<ProjectListingMode>(
+    initialProjectRoute?.kind === "folders"
+      ? "folders"
+      : initialProjectRoute?.kind === "designs"
+        ? "designs"
+        : "home"
+  );
+  const [projectContentWidth, setProjectContentWidth] = useState(PROJECT_CONTENT_FALLBACK_WIDTH);
+  const [projectDesignPage, setProjectDesignPage] = useState(1);
+  const [projectFolderDetailTab, setProjectFolderDetailTab] = useState<ProjectFolderDetailTab>("designs");
+  const [projectSortOrder, setProjectSortOrder] = useState<ProjectSortOrder>("newest");
+  const [projectViewMode, setProjectViewMode] = useState<ProjectViewMode>("grid");
+  const [isFoldersCollapsed, setIsFoldersCollapsed] = useState(false);
+  const [isDesignsCollapsed, setIsDesignsCollapsed] = useState(false);
+  const [pendingDesignFolderId, setPendingDesignFolderId] = useState<string | null>(null);
+  const [newDesignName, setNewDesignName] = useState("");
   const [previewTemplate, setPreviewTemplate] = useState<TemplateImage | null>(null);
-  const [pendingTemplateUpload, setPendingTemplateUpload] = useState<{
-    name: string;
-    dataUrl: string;
-    width: number;
-    height: number;
-    file: File;
-  } | null>(null);
+  const [pendingTemplateUploads, setPendingTemplateUploads] = useState<PendingTemplateUpload[]>([]);
   const [templateLibraryError, setTemplateLibraryError] = useState("");
   const [pendingDataset, setPendingDataset] = useState<PendingDataset | null>(null);
   const [publicSheetUrl, setPublicSheetUrl] = useState("");
@@ -1718,7 +2041,7 @@ export default function App() {
   const [downloadToast, setDownloadToast] = useState("");
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [showPageSizeMenu, setShowPageSizeMenu] = useState(false);
-  const [pageSizeDraft, setPageSizeDraft] = useState({ width: "", height: "" });
+  const [pageSizeDraft, setPageSizeDraft] = useState({ name: "", width: "", height: "" });
   const [cloudSync, setCloudSync] = useState<CloudSyncState>({
     status: "loading",
     message: "Đang kết nối cloud..."
@@ -1726,10 +2049,12 @@ export default function App() {
   const [exportMimeType, setExportMimeType] = useState<"image/png" | "image/jpeg">("image/png");
   const [exportScale, setExportScale] = useState<"1" | "0.5" | "0.75">("1");
   const [stageWidth, setStageWidth] = useState(0);
+  const [stageHeight, setStageHeight] = useState(0);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [activeCanvasTool, setActiveCanvasTool] = useState<CanvasTool>("move");
   const [activeDesignPanel, setActiveDesignPanel] = useState<DesignPanel>("elements");
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
+  const [showProjectAccountMenu, setShowProjectAccountMenu] = useState(false);
   const [isCanvasPanning, setIsCanvasPanning] = useState(false);
   const [inlineTextEditor, setInlineTextEditor] = useState<InlineTextEditor | null>(null);
   const [selectionBox, setSelectionBox] = useState({
@@ -1744,9 +2069,11 @@ export default function App() {
   const stageRef = useRef<Konva.Stage>(null);
   const transformerRef = useRef<Konva.Transformer>(null);
   const canvasWrapRef = useRef<HTMLDivElement>(null);
+  const projectContentRef = useRef<HTMLElement>(null);
   const canvasShellRef = useRef<HTMLDivElement>(null);
   const inlineTextEditorRef = useRef<HTMLTextAreaElement>(null);
   const settingsMenuRef = useRef<HTMLDivElement>(null);
+  const projectAccountMenuRef = useRef<HTMLDivElement>(null);
   const downloadMenuRef = useRef<HTMLDivElement>(null);
   const pageSizeMenuRef = useRef<HTMLDivElement>(null);
   const shapeWidthInputRef = useRef<HTMLInputElement>(null);
@@ -1838,6 +2165,25 @@ export default function App() {
     ? appState.templates.find((item) => item.id === pagePendingDeleteId) || null
     : null;
 
+  useEffect(() => {
+    if (!showTemplateLibraryModal) return;
+    const element = projectContentRef.current;
+    if (!element) return;
+
+    const updateContentWidth = () => {
+      const style = window.getComputedStyle(element);
+      const horizontalPadding =
+        parseFloat(style.paddingLeft || "0") + parseFloat(style.paddingRight || "0");
+      const contentWidth = Math.max(0, element.clientWidth - horizontalPadding);
+      setProjectContentWidth(contentWidth || PROJECT_CONTENT_FALLBACK_WIDTH);
+    };
+
+    updateContentWidth();
+    const resizeObserver = new ResizeObserver(updateContentWidth);
+    resizeObserver.observe(element);
+    return () => resizeObserver.disconnect();
+  }, [showTemplateLibraryModal]);
+
   const dataset = useMemo(
     () =>
       appState.datasets.find((item) => item.id === appState.activeDatasetId) ||
@@ -1884,6 +2230,7 @@ export default function App() {
   )
     ? selectedImageFolderId
     : fallbackTemplateFolderId;
+  const isAllProjectsView = activeTemplateFolderId === fallbackTemplateFolderId;
   const selectedTemplateFolder =
     appState.templateFolders.find((folder) => folder.id === activeTemplateFolderId) ||
     appState.templateFolders[0];
@@ -1892,8 +2239,150 @@ export default function App() {
     (folder) => folder.parentId === activeTemplateFolderId
   );
   const templatesInSelectedFolder = appState.templateImages.filter(
-    (item) => item.folderId === activeTemplateFolderId && getTemplateLibraryImage(item)
+    (item) =>
+      (isAllProjectsView || item.folderId === activeTemplateFolderId) &&
+      getTemplateLibraryImage(item)
   );
+  const designsInSelectedFolder = appState.templates.filter(
+    (item) => isAllProjectsView || item.folderId === activeTemplateFolderId
+  );
+  const activeProjectFolder = projectFolderId
+    ? appState.templateFolders.find((folder) => folder.id === projectFolderId) || null
+    : null;
+  const projectFolderChildren = appState.templateFolders.filter(
+    (folder) => folder.parentId === (activeProjectFolder ? activeProjectFolder.id : null)
+  );
+  const visibleManagementFolders = projectFolderChildren;
+  const projectSearchKeyword = normalizeText(projectSearch);
+  const managementItems = useMemo(() => {
+    const designs = appState.templates.map((item) => ({
+      id: item.id,
+      kind: "design" as const,
+      name: item.name,
+      folderId: item.folderId,
+      width: item.width,
+      height: item.height,
+      image: getTemplateLibraryImage(item),
+      template: item,
+      updatedAt: item.updatedAt
+    }));
+    const templateImages = appState.templateImages.map((item) => ({
+      id: item.id,
+      kind: "template" as const,
+      name: item.name,
+      folderId: item.folderId,
+      width: item.width,
+      height: item.height,
+      image: getTemplateLibraryImage(item),
+      updatedAt: item.createdAt
+    }));
+    return [...designs, ...templateImages].sort(
+      (left, right) => {
+        const leftTime = new Date(left.updatedAt).getTime();
+        const rightTime = new Date(right.updatedAt).getTime();
+        return projectSortOrder === "newest" ? rightTime - leftTime : leftTime - rightTime;
+      }
+    );
+  }, [appState.templateImages, appState.templates, projectSortOrder]);
+  const activeProjectFolderDesignCount = activeProjectFolder
+    ? appState.templates.filter((item) => item.folderId === activeProjectFolder.id).length
+    : 0;
+  const activeProjectFolderImageCount = activeProjectFolder
+    ? appState.templateImages.filter((item) => item.folderId === activeProjectFolder.id).length
+    : 0;
+  const visibleManagementItems = managementItems.filter((item) => {
+    if (activeProjectFolder && item.folderId !== activeProjectFolder.id) return false;
+    if (activeProjectFolder) {
+      if (projectFolderDetailTab === "designs" && item.kind !== "design") return false;
+      if (projectFolderDetailTab === "images" && item.kind !== "template") return false;
+    } else if (item.kind !== "design") {
+      return false;
+    }
+    if (!projectSearchKeyword) return true;
+    const folderName =
+      appState.templateFolders.find((folder) => folder.id === item.folderId)?.name || "";
+    return normalizeText(`${item.name} ${folderName}`).includes(projectSearchKeyword);
+  });
+  const visibleProjectFolders = projectSearchKeyword
+    ? visibleManagementFolders.filter((folder) =>
+        normalizeText(folder.name).includes(projectSearchKeyword)
+      )
+    : visibleManagementFolders;
+  const isProjectHomeView = !activeProjectFolder && projectListingMode === "home";
+  const isAdminProjectRootHome = isAdmin && projectRouteAdmin && isProjectHomeView;
+  const showProjectFoldersSection = activeProjectFolder
+    ? Boolean(visibleProjectFolders.length || projectSearchKeyword)
+    : projectListingMode !== "designs";
+  const showProjectDesignsSection = projectListingMode !== "folders" && !isAdminProjectRootHome;
+  const projectFolderPreviewLimit = getTwoRowPreviewLimit(
+    projectContentWidth,
+    PROJECT_FOLDER_CARD_MIN_WIDTH,
+    PROJECT_FOLDER_CARD_GAP
+  );
+  const projectDesignPreviewLimit = getTwoRowPreviewLimit(
+    projectContentWidth,
+    PROJECT_DESIGN_CARD_MIN_WIDTH,
+    PROJECT_DESIGN_CARD_GAP
+  );
+  const projectFolderDetailPageSize = getGridItemLimit(
+    projectContentWidth,
+    PROJECT_DESIGN_CARD_MIN_WIDTH,
+    PROJECT_DESIGN_CARD_GAP,
+    PROJECT_FOLDER_DETAIL_ROWS
+  );
+  const projectFolderDetailPageCount = activeProjectFolder
+    ? Math.max(1, Math.ceil(visibleManagementItems.length / projectFolderDetailPageSize))
+    : 1;
+  const currentProjectDesignPage = Math.min(projectDesignPage, projectFolderDetailPageCount);
+  const projectFolderDetailPageStart = (currentProjectDesignPage - 1) * projectFolderDetailPageSize;
+  const displayedProjectFolders = isProjectHomeView && !isAdminProjectRootHome
+    ? visibleProjectFolders.slice(0, projectFolderPreviewLimit)
+    : visibleProjectFolders;
+  const displayedManagementItems = isProjectHomeView
+    ? visibleManagementItems.slice(0, projectDesignPreviewLimit)
+    : activeProjectFolder
+      ? visibleManagementItems.slice(
+          projectFolderDetailPageStart,
+          projectFolderDetailPageStart + projectFolderDetailPageSize
+        )
+      : visibleManagementItems;
+  const showProjectDesignPagination =
+    Boolean(activeProjectFolder) && visibleManagementItems.length > projectFolderDetailPageSize;
+  const showAllProjectFoldersButton =
+    isProjectHomeView && !isAdminProjectRootHome && visibleProjectFolders.length > projectFolderPreviewLimit;
+  const showAllProjectDesignsButton =
+    isProjectHomeView && !isAdminProjectRootHome && visibleManagementItems.length > projectDesignPreviewLimit;
+  const showProjectViewToggle = Boolean(activeProjectFolder) || projectListingMode === "designs";
+  const projectDesignListClass =
+    showProjectViewToggle && projectViewMode === "list" ? "project-design-list" : "project-design-grid";
+  const projectPageTitle = activeProjectFolder
+    ? activeProjectFolder.name
+    : projectListingMode === "folders"
+      ? "Tất cả thư mục"
+      : projectListingMode === "designs"
+        ? "Tất cả thiết kế"
+        : "Tất cả dự án";
+
+  useEffect(() => {
+    setProjectDesignPage(1);
+  }, [projectFolderId, projectSearch, projectSortOrder, projectFolderDetailTab]);
+
+  useEffect(() => {
+    setProjectFolderDetailTab("designs");
+  }, [projectFolderId]);
+
+  useEffect(() => {
+    setProjectDesignPage((current) => Math.min(current, projectFolderDetailPageCount));
+  }, [projectFolderDetailPageCount]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      applyProjectRoute(getProjectRouteFromPath(window.location.pathname));
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [appState.templates, fallbackTemplateFolderId]);
+
   const templatesInPickerFolder = appState.templateImages.filter(
     (item) => item.folderId === activePickerFolderId && getTemplateLibraryImage(item)
   );
@@ -1969,7 +2458,9 @@ export default function App() {
     new Set([...BASE_FONTS, ...appState.customFonts.map((font) => font.family)])
   );
   const canEditWorkspace = true;
-  const canAddTextLayer = canEditWorkspace && isAdmin;
+  const isAdminWorkspace = isAdmin && isAdminPath;
+  const isAdminProjectManager = isAdmin && projectRouteAdmin && showTemplateLibraryModal;
+  const canAddTextLayer = canEditWorkspace && isAdminWorkspace;
   const uploadedFontGroups = useMemo(() => {
     const groups = new Map<
       string,
@@ -1995,9 +2486,11 @@ export default function App() {
   }, [appState.customFonts]);
 
   const fitScale = useMemo(() => {
-    if (!stageWidth) return 0.5;
-    return Math.min(1, Math.max(0.08, (stageWidth - 72) / template.width));
-  }, [stageWidth, template.width]);
+    if (!stageWidth || !stageHeight) return 0.5;
+    const widthFit = (stageWidth - 76) / template.width;
+    const heightFit = (stageHeight - 110) / template.height;
+    return Math.min(1, Math.max(0.08, Math.min(widthFit, heightFit)));
+  }, [stageHeight, stageWidth, template.height, template.width]);
   const stageScale = fitScale * zoomLevel;
   const zoomPercent = Math.round(zoomLevel * 100);
 
@@ -2164,13 +2657,20 @@ export default function App() {
 
   useEffect(() => {
     const wrap = canvasWrapRef.current;
-    if (!wrap) return;
-    const resize = () => setStageWidth(wrap.clientWidth);
+    const shell = canvasShellRef.current;
+    if (!wrap && !shell) return;
+    const resize = () => {
+      const target = shell || wrap;
+      if (!target) return;
+      setStageWidth(target.clientWidth);
+      setStageHeight(target.clientHeight);
+    };
     resize();
     const observer = new ResizeObserver(resize);
-    observer.observe(wrap);
+    if (wrap) observer.observe(wrap);
+    if (shell) observer.observe(shell);
     return () => observer.disconnect();
-  }, []);
+  }, [appState.activeTemplateId, isManagementPageOpen]);
 
   useEffect(() => {
     const shell = canvasShellRef.current;
@@ -2183,7 +2683,21 @@ export default function App() {
 
     shell.addEventListener("wheel", lockScrollWhileZooming, { passive: false });
     return () => shell.removeEventListener("wheel", lockScrollWhileZooming);
-  }, []);
+  }, [appState.activeTemplateId, isManagementPageOpen]);
+
+  useEffect(() => {
+    const finishWindowSelection = (event: PointerEvent) => {
+      if (!isSelectingRef.current) return;
+      finishCanvasSelection(getLogicalPointFromClient(event.clientX, event.clientY));
+    };
+
+    window.addEventListener("pointerup", finishWindowSelection);
+    window.addEventListener("pointercancel", finishWindowSelection);
+    return () => {
+      window.removeEventListener("pointerup", finishWindowSelection);
+      window.removeEventListener("pointercancel", finishWindowSelection);
+    };
+  }, [stageScale, selectionBox, template.layers]);
 
   useEffect(() => {
     if (!showSettingsMenu) return;
@@ -2200,6 +2714,40 @@ export default function App() {
     document.addEventListener("pointerdown", closeSettingsMenuOnOutsideClick);
     return () => document.removeEventListener("pointerdown", closeSettingsMenuOnOutsideClick);
   }, [showSettingsMenu]);
+
+  useEffect(() => {
+    if (!showProjectAccountMenu) return;
+
+    const closeProjectAccountMenuOnOutsideClick = (event: PointerEvent) => {
+      const menu = projectAccountMenuRef.current;
+      if (!menu || menu.contains(event.target as Node)) return;
+      setShowProjectAccountMenu(false);
+    };
+
+    document.addEventListener("pointerdown", closeProjectAccountMenuOnOutsideClick);
+    return () => document.removeEventListener("pointerdown", closeProjectAccountMenuOnOutsideClick);
+  }, [showProjectAccountMenu]);
+
+  useEffect(() => {
+    if (!isAdminProjectManager || !activeProjectFolder || projectFolderDetailTab !== "images") return;
+
+    const handlePasteImages = (event: ClipboardEvent) => {
+      const filesFromList = Array.from(event.clipboardData?.files || []).filter((file) =>
+        file.type.startsWith("image/")
+      );
+      const filesFromItems = Array.from(event.clipboardData?.items || [])
+        .filter((item) => item.type.startsWith("image/"))
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => Boolean(file));
+      const files = [...filesFromList, ...filesFromItems];
+      if (!files.length) return;
+      event.preventDefault();
+      prepareProjectFolderImages(files);
+    };
+
+    document.addEventListener("paste", handlePasteImages);
+    return () => document.removeEventListener("paste", handlePasteImages);
+  }, [isAdminProjectManager, activeProjectFolder?.id, projectFolderDetailTab]);
 
   useLayoutEffect(() => {
     const anchor = zoomAnchorRef.current;
@@ -2314,10 +2862,11 @@ export default function App() {
   useEffect(() => {
     if (!showPageSizeMenu) return;
     setPageSizeDraft({
+      name: template.name,
       width: String(template.width),
       height: String(template.height)
     });
-  }, [showPageSizeMenu, template.id, template.width, template.height]);
+  }, [showPageSizeMenu, template.id, template.name, template.width, template.height]);
 
   useEffect(() => {
     if (!showPageSizeMenu) return;
@@ -3273,20 +3822,47 @@ export default function App() {
   }
 
   function openTemplateLibraryModal() {
-    if (!isAdmin) return;
+    const adminProjectRoute = isAdmin && isAdminPath;
+    setProjectRouteAdmin(adminProjectRoute);
+    setBrowserPath(getProjectHomePath(adminProjectRoute));
     setShowDatasetLibraryModal(false);
     setShowFontLibraryModal(false);
     setShowTemplateLibraryModal(true);
     setTemplateLibraryError("");
     setSelectedTemplateIds([]);
     setSelectedTemplateFolderId(activeTemplateFolderId);
+    setProjectFolderId(null);
+    setProjectListingMode("home");
+    setProjectDesignPage(1);
+  }
+
+  function openCurrentTemplateFolder() {
+    const folderId = appState.templateFolders.some((folder) => folder.id === template.folderId)
+      ? template.folderId
+      : fallbackTemplateFolderId;
+    setProjectRouteAdmin(true);
+    setBrowserPath(getProjectFolderPath(folderId, true));
+    setShowDatasetLibraryModal(false);
+    setShowFontLibraryModal(false);
+    setShowTemplateLibraryModal(true);
+    setTemplateLibraryError("");
+    setSelectedTemplateIds([]);
+    setPendingTemplateUploads([]);
+    setPreviewTemplate(null);
+    setProjectFolderId(folderId);
+    setSelectedTemplateFolderId(folderId);
+    setProjectListingMode("home");
+    setProjectDesignPage(1);
+    setProjectSearch("");
+    setProjectFolderDetailTab("designs");
+    setIsDesignsCollapsed(false);
   }
 
   function closeTemplateLibraryModal() {
     setShowTemplateLibraryModal(false);
     setTemplateLibraryError("");
     setSelectedTemplateIds([]);
-    setPendingTemplateUpload(null);
+    setPendingTemplateUploads([]);
     setPreviewTemplate(null);
     setEditingTemplateFolderId(null);
     setOpenTemplateFolderMenuId(null);
@@ -3298,10 +3874,46 @@ export default function App() {
     closeFontLibraryModal();
   }
 
+  function applyProjectRoute(route: ProjectRoute | null) {
+    setPreviewTemplate(null);
+    setProjectDesignPage(1);
+    if (!route) {
+      setShowTemplateLibraryModal(false);
+      setProjectFolderId(null);
+      setProjectRouteAdmin(false);
+      setProjectListingMode("home");
+      return;
+    }
+
+    setProjectRouteAdmin(route.admin);
+
+    if (route.kind === "design-detail") {
+      activatePage(route.id, { updatePath: false });
+      return;
+    }
+
+    setShowDatasetLibraryModal(false);
+    setShowFontLibraryModal(false);
+    setShowTemplateLibraryModal(true);
+    setTemplateLibraryError("");
+    setSelectedTemplateIds([]);
+
+    if (route.kind === "folder-detail") {
+      setProjectFolderId(route.id);
+      setProjectListingMode("home");
+      setSelectedTemplateFolderId(route.id);
+      return;
+    }
+
+    setProjectFolderId(null);
+    setSelectedTemplateFolderId(fallbackTemplateFolderId);
+    setProjectListingMode(route.kind === "folders" ? "folders" : route.kind === "designs" ? "designs" : "home");
+  }
+
   function selectTemplateFolder(folderId: string) {
     setSelectedTemplateFolderId(folderId);
     setSelectedTemplateIds([]);
-    setPendingTemplateUpload(null);
+    setPendingTemplateUploads([]);
     setTemplateLibraryError("");
     setOpenTemplateFolderMenuId(null);
   }
@@ -3400,7 +4012,7 @@ export default function App() {
     setSelectedTemplateFolderId(fallbackFolderId);
     setSelectedPickerFolderId(fallbackFolderId);
     setSelectedTemplateIds([]);
-    setPendingTemplateUpload(null);
+    setPendingTemplateUploads([]);
     setEditingTemplateFolderId(null);
     setOpenTemplateFolderMenuId(null);
     setTemplateLibraryError("");
@@ -3441,64 +4053,121 @@ export default function App() {
   }
 
   async function prepareTemplateUpload(file: File | undefined) {
-    if (!file || !isAdmin) return;
-    const dataUrl = await fileToDataUrl(file);
-    const image = await loadHtmlImage(dataUrl);
-    setPendingTemplateUpload({
-      name: file.name.replace(/\.[^.]+$/, "") || "Ảnh mẫu mới",
-      dataUrl,
-      width: image.naturalWidth || image.width,
-      height: image.naturalHeight || image.height,
-      file
-    });
+    await prepareTemplateUploads(file ? [file] : []);
+  }
+
+  async function prepareTemplateUploads(files: Array<File | undefined | null>) {
+    if (!isAdmin) return;
+    const imageFiles = files.filter((file): file is File => Boolean(file && file.type.startsWith("image/")));
+    if (!imageFiles.length) return;
     setTemplateLibraryError("");
+
+    const preparedUploads = await Promise.all(
+      imageFiles.map(async (file) => {
+        const dataUrl = await fileToDataUrl(file);
+        const image = await loadHtmlImage(dataUrl);
+        return {
+          id: uid("upload"),
+          name: file.name.replace(/\.[^.]+$/, "") || "Ảnh mẫu mới",
+          dataUrl,
+          width: image.naturalWidth || image.width,
+          height: image.naturalHeight || image.height,
+          file,
+          status: "ready" as const
+        };
+      })
+    );
+
+    setPendingTemplateUploads((current) => [...current.filter((item) => item.status !== "saved"), ...preparedUploads]);
+  }
+
+  function updatePendingTemplateUpload(uploadId: string, patch: Partial<PendingTemplateUpload>) {
+    setPendingTemplateUploads((current) =>
+      current.map((item) => (item.id === uploadId ? { ...item, ...patch } : item))
+    );
   }
 
   async function savePendingTemplateUpload() {
-    if (!pendingTemplateUpload || !isAdmin) return;
+    const uploadsToSave = pendingTemplateUploads.filter((item) => item.status !== "saved");
+    if (!uploadsToSave.length || !isAdmin) return;
     if (!selectedTemplateFolder) {
       setTemplateLibraryError("Vui lòng tạo hoặc chọn folder trước khi tải ảnh");
       return;
     }
-    let assetUrl = pendingTemplateUpload.dataUrl;
-    let width = pendingTemplateUpload.width;
-    let height = pendingTemplateUpload.height;
-    if (remoteSyncEnabledRef.current) {
-      setIsUploadingAsset(true);
-      try {
-        const uploaded = await uploadAssetToCloudinary(pendingTemplateUpload.file, "image");
-        assetUrl = uploaded.url;
-        width = uploaded.width || width;
-        height = uploaded.height || height;
-      } catch (error) {
-        setTemplateLibraryError(
-          error instanceof Error ? error.message : "Không tải ảnh lên Cloudinary được"
-        );
-        setIsUploadingAsset(false);
-        return;
-      }
-      setIsUploadingAsset(false);
-    }
-    const nextImage: TemplateImage = {
-      id: uid("image"),
-      name: pendingTemplateUpload.name.trim() || "Ảnh mẫu mới",
-      folderId: activeTemplateFolderId,
-      width,
-      height,
-      dataUrl: assetUrl,
-      createdAt: new Date().toISOString()
-    };
-    setAppState((current) => ({
-      ...current,
-      templateImages: [nextImage, ...current.templateImages]
-    }));
-    setPendingTemplateUpload(null);
+    const targetFolderId = activeTemplateFolderId;
+    setIsUploadingAsset(true);
     setTemplateLibraryError("");
+    const savedImages: TemplateImage[] = [];
+
+    for (const upload of uploadsToSave) {
+      updatePendingTemplateUpload(upload.id, { status: "uploading", error: undefined });
+      let assetUrl = upload.dataUrl;
+      let width = upload.width;
+      let height = upload.height;
+      try {
+        if (remoteSyncEnabledRef.current) {
+          const uploaded = await uploadAssetToCloudinary(upload.file, "image");
+          assetUrl = uploaded.url;
+          width = uploaded.width || width;
+          height = uploaded.height || height;
+        }
+        savedImages.push({
+          id: uid("image"),
+          name: upload.name.trim() || "Ảnh mẫu mới",
+          folderId: targetFolderId,
+          width,
+          height,
+          dataUrl: assetUrl,
+          createdAt: new Date().toISOString()
+        });
+        updatePendingTemplateUpload(upload.id, { status: "saved" });
+      } catch (error) {
+        updatePendingTemplateUpload(upload.id, {
+          status: "error",
+          error: error instanceof Error ? error.message : "Không tải ảnh lên được"
+        });
+      }
+    }
+    if (savedImages.length) {
+      setAppState((current) => ({
+        ...current,
+        templateImages: [...savedImages.reverse(), ...current.templateImages]
+      }));
+    }
+    setIsUploadingAsset(false);
+    const failedCount = uploadsToSave.length - savedImages.length;
+    setTemplateLibraryError(
+      failedCount ? `${failedCount} ảnh chưa tải lên được. Vui lòng thử lại.` : "Đã tải xong tất cả ảnh."
+    );
   }
 
-  function activatePage(templateId: string) {
+  function prepareProjectFolderImages(files: File[]) {
+    if (!isAdminProjectManager || !activeProjectFolder || projectFolderDetailTab !== "images") return;
+    setSelectedTemplateFolderId(activeProjectFolder.id);
+    prepareTemplateUploads(files);
+  }
+
+  function handleProjectImageDragOver(event: React.DragEvent<HTMLElement>) {
+    if (!isAdminProjectManager || !activeProjectFolder || projectFolderDetailTab !== "images") return;
+    if (!Array.from(event.dataTransfer.items || []).some((item) => item.type.startsWith("image/"))) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleProjectImageDrop(event: React.DragEvent<HTMLElement>) {
+    if (!isAdminProjectManager || !activeProjectFolder || projectFolderDetailTab !== "images") return;
+    const files = Array.from(event.dataTransfer.files || []).filter((file) => file.type.startsWith("image/"));
+    if (!files.length) return;
+    event.preventDefault();
+    prepareProjectFolderImages(files);
+  }
+
+  function activatePage(templateId: string, options: { updatePath?: boolean } = {}) {
     const nextTemplate = appState.templates.find((item) => item.id === templateId);
     if (!nextTemplate) return;
+    if (options.updatePath !== false) {
+      setBrowserPath(getProjectDesignPath(templateId, projectRouteAdmin || isAdminPath));
+    }
     closeManagementPages();
     setShowSettingsMenu(false);
     setAppState((current) => ({
@@ -3509,12 +4178,22 @@ export default function App() {
     setZoomLevel(1);
   }
 
-  function addPage() {
+  function openProjectItem(item: { id: string; kind: "design" | "template" }) {
+    if (item.kind === "design") {
+      activatePage(item.id);
+      return;
+    }
+    const image = appState.templateImages.find((candidate) => candidate.id === item.id);
+    if (image) setPreviewTemplate(image);
+  }
+
+  function createPageInFolder(folderId?: string, name?: string) {
     const currentState = appStateRef.current;
+    const nextName = name?.trim() || getNextPageName(currentState.templates);
     const nextTemplate: Template = {
       id: uid("template"),
-      name: getNextPageName(currentState.templates),
-      folderId: currentState.templateFolders[0]?.id || DEFAULT_TEMPLATE_FOLDER_ID,
+      name: nextName,
+      folderId: folderId || currentState.templateFolders[0]?.id || DEFAULT_TEMPLATE_FOLDER_ID,
       width: 1080,
       height: 1350,
       backgroundDataUrl: "",
@@ -3527,12 +4206,39 @@ export default function App() {
       activeTemplateId: nextTemplate.id
     };
     appStateRef.current = nextState;
+    setBrowserPath(getProjectDesignPath(nextTemplate.id, projectRouteAdmin || isAdminPath));
     closeManagementPages();
     setShowSettingsMenu(false);
     setAppState(nextState);
     setEditingPageId(null);
     setSelectedLayerIds(nextTemplate.layers[0] ? [nextTemplate.layers[0].id] : []);
     setZoomLevel(1);
+  }
+
+  function addPage() {
+    createPageInFolder();
+  }
+
+  function openCreateDesignModal(folderId: string) {
+    setPendingDesignFolderId(folderId);
+    setNewDesignName("");
+    setTemplateLibraryError("");
+  }
+
+  function closeCreateDesignModal() {
+    setPendingDesignFolderId(null);
+    setNewDesignName("");
+  }
+
+  function submitCreateDesign(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = newDesignName.trim();
+    if (!name) {
+      setTemplateLibraryError("Vui lòng nhập tên thiết kế");
+      return;
+    }
+    createPageInFolder(pendingDesignFolderId || undefined, name);
+    closeCreateDesignModal();
   }
 
   function deletePage(templateId: string) {
@@ -3567,7 +4273,7 @@ export default function App() {
   }
 
   function finishEditingPage(templateId: string, name: string) {
-    if (!name.trim()) renameTemplate(templateId, "Page");
+    if (!name.trim()) renameTemplate(templateId, "Trang");
     setEditingPageId(null);
   }
 
@@ -3582,8 +4288,32 @@ export default function App() {
     }));
   }
 
+  function duplicateTemplate(templateId: string) {
+    if (!isAdmin) return;
+    setAppState((current) => {
+      const sourceTemplate = current.templates.find((item) => item.id === templateId);
+      if (!sourceTemplate) return current;
+      const duplicatedTemplate: Template = {
+        ...sourceTemplate,
+        id: uid("template"),
+        name: getDuplicateTemplateName(sourceTemplate.name, current.templates),
+        layers: sourceTemplate.layers.map((layer) => ({ ...layer, id: uid("layer") })),
+        updatedAt: new Date().toISOString()
+      };
+      const sourceIndex = current.templates.findIndex((item) => item.id === templateId);
+      const templates = [...current.templates];
+      templates.splice(Math.max(sourceIndex, 0), 0, duplicatedTemplate);
+      return {
+        ...current,
+        templates
+      };
+    });
+    setTemplateLibraryError("");
+  }
+
   function openPageSizeMenu() {
     setPageSizeDraft({
+      name: template.name,
       width: String(template.width),
       height: String(template.height)
     });
@@ -3597,14 +4327,17 @@ export default function App() {
     if (!Number.isFinite(width) || !Number.isFinite(height)) return;
     const nextWidth = Math.min(10000, Math.max(64, width));
     const nextHeight = Math.min(10000, Math.max(64, height));
+    const nextName = pageSizeDraft.name.trim() || template.name;
 
     updateTemplate((current) => ({
       ...current,
+      name: isAdminWorkspace ? nextName : current.name,
       width: nextWidth,
       height: nextHeight,
       updatedAt: new Date().toISOString()
     }));
     setPageSizeDraft({
+      name: nextName,
       width: String(nextWidth),
       height: String(nextHeight)
     });
@@ -3640,6 +4373,16 @@ export default function App() {
       };
     });
     setSelectedTemplateIds([]);
+    setTemplateLibraryError("");
+  }
+
+  function deleteTemplateImage(imageId: string) {
+    if (!isAdmin) return;
+    setAppState((current) => ({
+      ...current,
+      templateImages: current.templateImages.filter((item) => item.id !== imageId)
+    }));
+    setSelectedTemplateIds((current) => current.filter((id) => id !== imageId));
     setTemplateLibraryError("");
   }
 
@@ -4020,6 +4763,16 @@ export default function App() {
     };
   }
 
+  function getLogicalPointFromClient(clientX: number, clientY: number) {
+    const stage = stageRef.current;
+    const rect = stage?.container().getBoundingClientRect();
+    if (!rect) return null;
+    return {
+      x: (clientX - rect.left) / stageScale,
+      y: (clientY - rect.top) / stageScale
+    };
+  }
+
   function beginCanvasSelection(event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
     if (!canEditWorkspace) return;
     if ("button" in event.evt && event.evt.button === 1) return;
@@ -4052,9 +4805,14 @@ export default function App() {
     });
   }
 
-  function finishCanvasSelection() {
+  function finishCanvasSelection(pointerOverride?: { x: number; y: number } | null) {
     if (!isSelectingRef.current || !selectionStartRef.current) return;
-    const pointer = getLogicalPointer();
+    const pointer =
+      pointerOverride &&
+      Number.isFinite(pointerOverride.x) &&
+      Number.isFinite(pointerOverride.y)
+        ? pointerOverride
+        : getLogicalPointer();
     const start = selectionStartRef.current;
     const rawSelection = pointer
       ? {
@@ -4072,10 +4830,8 @@ export default function App() {
     } else {
       const selectedIds = template.layers
         .filter((layer) => {
-          const node = layerRefs.current[layer.id];
-          if (!node) return false;
-          const box = node.getClientRect();
-          return boxesIntersect(normalizedSelection, box);
+          const box = getLayerBounds(layer);
+          return boxesIntersect(normalizedSelection, box, MARQUEE_SELECTION_TOLERANCE);
         })
         .map((layer) => layer.id);
       setSelectedLayerIds(selectedIds);
@@ -4392,6 +5148,20 @@ export default function App() {
     showDownloadToast(didDownload ? "Đã tải ảnh xuống" : "Không thể tải ảnh");
   }
 
+  function saveTemplateForClient() {
+    if (!isAdminWorkspace) return;
+    setShowDownloadMenu(false);
+    updateTemplate((current) => ({
+      ...current,
+      updatedAt: new Date().toISOString()
+    }));
+    setCloudSync({
+      status: "saved",
+      message: "Đã lưu template"
+    });
+    showDownloadToast("Đã lưu template để client sử dụng");
+  }
+
   function resetLocalData() {
     if (!isAdmin) return;
     const fresh = createInitialState();
@@ -4405,7 +5175,7 @@ export default function App() {
       <main className="login-shell">
         <form className="login-card" onSubmit={handleAdminUnlock}>
           <div className="login-brand">
-            <img src="https://eventci.vercel.app/favicon.ico" alt="" className="login-logo" />
+            <img src={ONEHOUSING_LOGO_URL} alt="OneHousing" className="login-logo" />
             <div>
               <div className="login-brand-name">OneHousing</div>
               <div className="login-brand-sub">Công cụ tạo ảnh chỉ căn</div>
@@ -4445,6 +5215,756 @@ export default function App() {
     );
   }
 
+  if (showTemplateLibraryModal) {
+    return (
+      <div className="project-manager-shell">
+        <header className="project-manager-header">
+          <div className="project-manager-brand">
+            <img src={ONEHOUSING_LOGO_URL} alt="OneHousing" />
+          </div>
+          {isAdminProjectManager ? (
+            <div className="project-account-menu-wrap" ref={projectAccountMenuRef}>
+              <button
+                type="button"
+                className={showProjectAccountMenu ? "project-account-btn active" : "project-account-btn"}
+                aria-expanded={showProjectAccountMenu}
+                onClick={() => setShowProjectAccountMenu((current) => !current)}
+              >
+                <span>{adminAccount.slice(0, 1).toUpperCase()}</span>
+                <strong>{adminAccount}</strong>
+                <ChevronDown size={16} />
+              </button>
+              {showProjectAccountMenu ? (
+                <div className="project-account-menu" role="menu">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowProjectAccountMenu(false);
+                      openAdminSettings();
+                    }}
+                  >
+                    <Lock size={16} />
+                    Đổi mật khẩu
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowProjectAccountMenu(false);
+                      logoutAdmin();
+                    }}
+                  >
+                    <LogOut size={16} />
+                    Đăng xuất
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </header>
+
+        <main className="project-main">
+          <section className="project-hero">
+            <div className="project-hero-inner">
+              <h1>{projectPageTitle}</h1>
+              <label className="project-search">
+                <Search size={24} />
+                <input
+                  value={projectSearch}
+                  onChange={(event) => setProjectSearch(event.target.value)}
+                  placeholder="Tìm kiếm tên thư mục hoặc mẫu thiết kế"
+                />
+              </label>
+            </div>
+          </section>
+
+          <section
+            className="project-content"
+            ref={projectContentRef}
+            onDragOver={handleProjectImageDragOver}
+            onDrop={handleProjectImageDrop}
+          >
+            {false && pendingTemplateUploads.length ? (
+              <div className="project-upload-draft">
+                <div className="project-upload-list">
+                  {pendingTemplateUploads.map((upload) => (
+                    <div key={upload.id} className={`project-upload-item ${upload.status}`}>
+                      <img src={upload.dataUrl} alt="" />
+                      <span>
+                        {upload.status === "uploading"
+                          ? "Đang tải lên"
+                          : upload.status === "saved"
+                            ? "Đã tải xong"
+                            : upload.status === "error"
+                              ? upload.error || "Lỗi tải ảnh"
+                              : "Sẵn sàng tải"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <div>
+                  <label>
+                    Tên mẫu
+                    <input
+                      value={pendingTemplateUploads[0]?.name || ""}
+                      onChange={(event) =>
+                        pendingTemplateUploads[0]
+                          ? updatePendingTemplateUpload(pendingTemplateUploads[0].id, { name: event.target.value })
+                          : undefined
+                      }
+                    />
+                  </label>
+                  <span>
+                    {pendingTemplateUploads.length} ảnh đang chờ · {pendingTemplateUploads.filter((upload) => upload.status === "saved").length} ảnh đã tải xong
+                  </span>
+                </div>
+                <button type="button" className="project-secondary-btn" disabled={isUploadingAsset} onClick={() => setPendingTemplateUploads([])}>
+                  Hủy
+                </button>
+                <button
+                  type="button"
+                  className="project-primary-btn"
+                  disabled={isUploadingAsset || pendingTemplateUploads.every((upload) => upload.status === "saved")}
+                  onClick={savePendingTemplateUpload}
+                >
+                  Lưu mẫu
+                </button>
+              </div>
+            ) : null}
+
+            {templateLibraryError ? <div className="project-error">{templateLibraryError}</div> : null}
+
+            {false && isAdminProjectManager && activeProjectFolder && projectFolderDetailTab === "images" ? (
+              <div className="project-image-dropzone">
+                <ImageUp size={22} />
+                <div>
+                  <strong>Kéo ảnh vào đây hoặc dán ảnh từ clipboard</strong>
+                  <span>Có thể chọn nhiều ảnh từ máy, kéo thả nhiều ảnh hoặc copy ảnh rồi paste vào trang.</span>
+                </div>
+              </div>
+            ) : null}
+
+            {activeProjectFolder || projectListingMode !== "home" ? (
+              <div className="project-folder-detail-head">
+                <button
+                  type="button"
+                  className="project-back-btn"
+                  onClick={() => {
+                    setBrowserPath(getProjectHomePath(projectRouteAdmin));
+                    setProjectFolderId(null);
+                    setProjectListingMode("home");
+                    setProjectDesignPage(1);
+                    setSelectedTemplateFolderId(fallbackTemplateFolderId);
+                    setProjectSearch("");
+                  }}
+                >
+                  <ArrowLeft size={17} />
+                  Quay lại tất cả dự án
+                </button>
+                {activeProjectFolder ? (
+                  <div className="project-folder-toolbar">
+                  <div className="project-detail-tabs" role="tablist" aria-label="Nội dung trong thư mục">
+                    <button
+                      type="button"
+                      className={projectFolderDetailTab === "designs" ? "active" : ""}
+                      role="tab"
+                      aria-selected={projectFolderDetailTab === "designs"}
+                      onClick={() => setProjectFolderDetailTab("designs")}
+                    >
+                      Thiết kế
+                      <span>{activeProjectFolderDesignCount}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={projectFolderDetailTab === "images" ? "active" : ""}
+                      role="tab"
+                      aria-selected={projectFolderDetailTab === "images"}
+                      onClick={() => setProjectFolderDetailTab("images")}
+                    >
+                      Hình ảnh
+                      <span>{activeProjectFolderImageCount}</span>
+                    </button>
+                  </div>
+                  <div className="project-detail-action-row">
+                    {isAdminProjectManager && projectFolderDetailTab === "designs" ? (
+                      <button
+                        type="button"
+                        className="project-primary-btn"
+                        onClick={() => openCreateDesignModal(activeProjectFolder.id)}
+                      >
+                        <Plus size={17} />
+                        Tạo thiết kế mới
+                      </button>
+                    ) : isAdminProjectManager ? (
+                      <label className="project-primary-btn">
+                        <ImageUp size={17} />
+                        Tải ảnh lên
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          onClick={() => setSelectedTemplateFolderId(activeProjectFolder.id)}
+                          onChange={(event) => {
+                            prepareTemplateUploads(Array.from(event.target.files || []));
+                            event.target.value = "";
+                          }}
+                        />
+                      </label>
+                    ) : (
+                      <span />
+                    )}
+                    <div className="project-detail-actions">
+                      <button
+                        type="button"
+                        className="project-tool-icon-btn"
+                        title={projectSortOrder === "newest" ? "Sắp xếp cũ nhất" : "Sắp xếp mới nhất"}
+                        aria-label={projectSortOrder === "newest" ? "Sắp xếp cũ nhất" : "Sắp xếp mới nhất"}
+                        onClick={() =>
+                          setProjectSortOrder((current) => (current === "newest" ? "oldest" : "newest"))
+                        }
+                      >
+                        <span key={projectSortOrder} className="project-tool-icon-motion">
+                          {projectSortOrder === "newest" ? <ArrowUpDown size={20} /> : <ArrowDownUp size={20} />}
+                        </span>
+                      </button>
+                      {showProjectViewToggle ? (
+                        <button
+                          type="button"
+                          className="project-tool-icon-btn active"
+                          title={projectViewMode === "grid" ? "Xem dạng danh sách" : "Xem dạng lưới"}
+                          aria-label={projectViewMode === "grid" ? "Xem dạng danh sách" : "Xem dạng lưới"}
+                          onClick={() => setProjectViewMode((current) => (current === "grid" ? "list" : "grid"))}
+                        >
+                          <span key={projectViewMode} className="project-tool-icon-motion">
+                            {projectViewMode === "grid" ? <Columns3 size={20} /> : <Rows3 size={20} />}
+                          </span>
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  </div>
+                ) : (
+                  <div className="project-detail-actions">
+                    {showProjectViewToggle ? (
+                      <button
+                        type="button"
+                        className="project-tool-icon-btn active"
+                        title={projectViewMode === "grid" ? "Xem dạng danh sách" : "Xem dạng lưới"}
+                        aria-label={projectViewMode === "grid" ? "Xem dạng danh sách" : "Xem dạng lưới"}
+                        onClick={() => setProjectViewMode((current) => (current === "grid" ? "list" : "grid"))}
+                      >
+                        <span key={projectViewMode} className="project-tool-icon-motion">
+                          {projectViewMode === "grid" ? <Columns3 size={20} /> : <Rows3 size={20} />}
+                        </span>
+                      </button>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+            ) : null}
+
+            {showProjectFoldersSection ? (
+              <section className="project-section">
+                <div
+                  className={
+                    isAdminProjectManager
+                      ? "project-section-heading project-folder-heading admin-folder-heading"
+                      : "project-section-heading project-folder-heading"
+                  }
+                >
+                  {isAdminProjectManager ? (
+                    <div className="project-admin-folder-title-row">
+                      <h2>Thư mục</h2>
+                      <button
+                        type="button"
+                        className="project-secondary-btn"
+                        onClick={() => createTemplateFolder(activeProjectFolder?.id || null)}
+                      >
+                        <FolderPlus size={17} />
+                        Tạo thư mục mới
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="project-section-title-row">
+                      <button
+                        type="button"
+                        className="project-section-title compact"
+                        aria-expanded={!isFoldersCollapsed}
+                        onClick={() => setIsFoldersCollapsed((current) => !current)}
+                      >
+                        {isFoldersCollapsed ? <ChevronRight size={20} /> : <ChevronDown size={20} />}
+                        <h2>Thư mục</h2>
+                      </button>
+                    </div>
+                  )}
+                  {!isAdminProjectManager && showAllProjectFoldersButton ? (
+                    <button
+                      type="button"
+                      className="project-see-all-btn"
+                      onClick={() => {
+                        setBrowserPath(getProjectFolderListingPath(projectRouteAdmin));
+                        setProjectListingMode("folders");
+                        setProjectDesignPage(1);
+                        setIsFoldersCollapsed(false);
+                      }}
+                    >
+                      Xem tất cả
+                    </button>
+                  ) : null}
+                </div>
+                {!isFoldersCollapsed ? (
+                  <div className="project-folder-cards">
+                    {displayedProjectFolders.map((folder) => {
+                      const childCount = appState.templateFolders.filter(
+                        (candidate) => candidate.parentId === folder.id
+                      ).length;
+                      const designCount = appState.templates.filter(
+                        (candidate) => candidate.folderId === folder.id
+                      ).length;
+                      const imageCount = appState.templateImages.filter(
+                        (candidate) => candidate.folderId === folder.id
+                      ).length;
+                      return (
+                        <article
+                          key={folder.id}
+                          className="project-folder-card"
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => {
+                            setBrowserPath(getProjectFolderPath(folder.id, projectRouteAdmin));
+                            setProjectFolderId(folder.id);
+                            setProjectListingMode("home");
+                            setProjectDesignPage(1);
+                            setSelectedTemplateFolderId(folder.id);
+                            setIsDesignsCollapsed(false);
+                            setProjectSearch("");
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              setBrowserPath(getProjectFolderPath(folder.id, projectRouteAdmin));
+                              setProjectFolderId(folder.id);
+                              setProjectListingMode("home");
+                              setProjectDesignPage(1);
+                              setSelectedTemplateFolderId(folder.id);
+                              setIsDesignsCollapsed(false);
+                              setProjectSearch("");
+                            }
+                          }}
+                        >
+                          <Folder size={34} />
+                          <div>
+                            {isAdminProjectManager && editingTemplateFolderId === folder.id ? (
+                              <input
+                                autoFocus
+                                value={folder.name}
+                                onClick={(event) => event.stopPropagation()}
+                                onKeyDown={(event) => {
+                                  event.stopPropagation();
+                                  if (event.key === "Enter") event.currentTarget.blur();
+                                  if (event.key === "Escape") setEditingTemplateFolderId(null);
+                                }}
+                                onChange={(event) => renameTemplateFolder(folder.id, event.target.value)}
+                                onBlur={(event) => finishRenameTemplateFolder(folder.id, event.target.value)}
+                              />
+                            ) : (
+                              <strong>{folder.name}</strong>
+                            )}
+                            <span>
+                              {childCount + designCount + imageCount} mục
+                            </span>
+                          </div>
+                          {isAdminProjectManager ? (
+                            <div className="project-folder-card-actions">
+                              <button
+                                type="button"
+                                title="Tùy chọn"
+                                aria-label="Tùy chọn thư mục"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setOpenTemplateFolderMenuId((current) =>
+                                    current === folder.id ? null : folder.id
+                                  );
+                                }}
+                              >
+                                <MoreHorizontal size={17} />
+                              </button>
+                              {openTemplateFolderMenuId === folder.id ? (
+                                <div className="project-folder-action-menu">
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setEditingTemplateFolderId(folder.id);
+                                      setOpenTemplateFolderMenuId(null);
+                                    }}
+                                  >
+                                    <Pencil size={15} />
+                                    Sửa tên
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="danger"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setOpenTemplateFolderMenuId(null);
+                                      deleteTemplateFolder(folder.id);
+                                    }}
+                                  >
+                                    <Trash2 size={15} />
+                                    Xóa
+                                  </button>
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </article>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
+
+            {showProjectDesignsSection ? (
+              <section className="project-section">
+                {!activeProjectFolder ? (
+                  <div className="project-section-heading">
+                    <button
+                      type="button"
+                      className="project-section-title compact"
+                      aria-expanded={!isDesignsCollapsed}
+                      onClick={() => setIsDesignsCollapsed((current) => !current)}
+                    >
+                      {isDesignsCollapsed ? <ChevronRight size={20} /> : <ChevronDown size={20} />}
+                      <h2>Thiết kế</h2>
+                    </button>
+                    {showAllProjectDesignsButton ? (
+                      <button
+                        type="button"
+                        className="project-see-all-btn"
+                        onClick={() => {
+                          setBrowserPath(getProjectDesignListingPath(projectRouteAdmin));
+                          setProjectListingMode("designs");
+                          setProjectDesignPage(1);
+                          setIsDesignsCollapsed(false);
+                        }}
+                      >
+                        Xem tất cả
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {(activeProjectFolder || !isDesignsCollapsed) && displayedManagementItems.length ? (
+                  <>
+                    <div className={projectDesignListClass}>
+                      {displayedManagementItems.map((item) => (
+                        <article
+                          key={`${item.kind}-${item.id}`}
+                          className="project-design-card"
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => openProjectItem(item)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              openProjectItem(item);
+                            }
+                          }}
+                        >
+                          <button
+                            type="button"
+                            className={item.kind === "design" || item.image ? "project-design-thumb" : "project-design-thumb blank"}
+                            tabIndex={-1}
+                          >
+                            {item.kind === "design" ? (
+                              <ProjectDesignThumbnail template={item.template} />
+                            ) : item.image ? (
+                              <img src={item.image} alt={item.name} />
+                            ) : (
+                              <span />
+                            )}
+                          </button>
+                          <div className="project-design-meta">
+                            {!isAdminProjectManager ? (
+                              <strong>{item.kind === "design" ? localizeProjectName(item.name) : item.name}</strong>
+                            ) : item.kind === "design" ? (
+                              <input
+                                value={localizeProjectName(item.name)}
+                                onClick={(event) => event.stopPropagation()}
+                                onKeyDown={(event) => event.stopPropagation()}
+                                onChange={(event) => renameTemplate(item.id, event.target.value)}
+                                onBlur={(event) => {
+                                  if (!event.target.value.trim()) renameTemplate(item.id, "Trang");
+                                }}
+                                title="Đổi tên thiết kế"
+                              />
+                            ) : (
+                              <input
+                                value={item.name}
+                                onClick={(event) => event.stopPropagation()}
+                                onKeyDown={(event) => event.stopPropagation()}
+                                onChange={(event) => renameTemplateImage(item.id, event.target.value)}
+                                onBlur={(event) => {
+                                  if (!event.target.value.trim()) renameTemplateImage(item.id, "Ảnh chưa đặt tên");
+                                }}
+                                title="Đổi tên mẫu"
+                              />
+                            )}
+                            <span>
+                              {item.width} x {item.height} · {formatProjectTime(item.updatedAt)}
+                            </span>
+                          </div>
+                          {isAdminProjectManager ? (
+                            <div className="project-card-actions">
+                              {item.kind === "design" ? (
+                                <button
+                                  type="button"
+                                  title="Nhân bản"
+                                  aria-label="Nhân bản thiết kế"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    duplicateTemplate(item.id);
+                                  }}
+                                >
+                                  <Copy size={17} />
+                                </button>
+                              ) : null}
+                              <button
+                                type="button"
+                                title="Xóa"
+                                aria-label="Xóa"
+                                disabled={item.kind === "design" && appState.templates.length <= 1}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  if (item.kind === "design") {
+                                    if (window.confirm(`Xóa thiết kế "${localizeProjectName(item.name)}"?`)) deletePage(item.id);
+                                    return;
+                                  }
+                                  if (window.confirm(`Xóa mẫu "${item.name}"?`)) {
+                                    deleteTemplateImage(item.id);
+                                  }
+                                }}
+                              >
+                                <Trash2 size={17} />
+                              </button>
+                            </div>
+                          ) : null}
+                        </article>
+                      ))}
+                    </div>
+                    {showProjectDesignPagination ? (
+                      <nav className="project-pagination" aria-label="Phân trang thiết kế">
+                        <button
+                          type="button"
+                          disabled={currentProjectDesignPage <= 1}
+                          onClick={() => setProjectDesignPage((current) => Math.max(1, current - 1))}
+                        >
+                          Trước
+                        </button>
+                        <span>
+                          Trang {currentProjectDesignPage} / {projectFolderDetailPageCount}
+                        </span>
+                        <button
+                          type="button"
+                          disabled={currentProjectDesignPage >= projectFolderDetailPageCount}
+                          onClick={() =>
+                            setProjectDesignPage((current) =>
+                              Math.min(projectFolderDetailPageCount, current + 1)
+                            )
+                          }
+                        >
+                          Sau
+                        </button>
+                      </nav>
+                    ) : null}
+                  </>
+                ) : !isDesignsCollapsed ? (
+                  <div className="project-empty-state">
+                    {projectFolderDetailTab === "images" ? <ImageUp size={34} /> : <FolderPlus size={34} />}
+                    <strong>
+                      {projectFolderDetailTab === "images"
+                        ? "Thư mục này chưa có hình ảnh"
+                        : "Thư mục này chưa có thiết kế"}
+                    </strong>
+                    <span>
+                      {projectFolderDetailTab === "images"
+                        ? "Tải hình ảnh liên quan tới dự án lên để quản lý cùng thư mục."
+                        : "Tạo thiết kế mới trong thư mục này để bắt đầu."}
+                    </span>
+                    {projectFolderDetailTab === "images" ? (
+                      <div className="project-image-dropzone">
+                        <ImageUp size={22} />
+                        <div>
+                          <strong>Kéo ảnh vào đây hoặc dán ảnh từ clipboard</strong>
+                          <span>Có thể chọn nhiều ảnh từ máy, kéo thả nhiều ảnh hoặc copy ảnh rồi paste vào trang.</span>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+            </section>
+            ) : null}
+          </section>
+        </main>
+
+        {false && selectedTemplateIds.length ? (
+          <button
+            type="button"
+            className="project-floating-delete"
+            onClick={deleteSelectedTemplates}
+          >
+            <Trash2 size={18} />
+            Xóa {selectedTemplateIds.length} mẫu
+          </button>
+        ) : null}
+
+        {previewTemplate ? (
+          <div className="modal-backdrop preview-backdrop" role="dialog" aria-modal="true">
+            <div className="admin-modal template-preview-modal">
+              <div className="modal-head">
+                <div>
+                  <h2>{previewTemplate.name}</h2>
+                  <p className="template-preview-meta">
+                    {previewTemplate.width} x {previewTemplate.height}px
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title="Đóng"
+                  onClick={() => setPreviewTemplate(null)}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="template-preview-frame">
+                {getTemplateLibraryImage(previewTemplate) ? (
+                  <img src={getTemplateLibraryImage(previewTemplate)} alt={previewTemplate.name} />
+                ) : (
+                  <div className="blank-preview-placeholder">Chưa có ảnh</div>
+                )}
+              </div>
+              <div className="template-preview-actions">
+                <button type="button" className="btn" onClick={() => setPreviewTemplate(null)}>
+                  Đóng
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {pendingTemplateUploads.length ? (
+          <div className="modal-backdrop" role="dialog" aria-modal="true">
+            <div className="admin-modal project-upload-modal">
+              <div className="modal-head">
+                <div>
+                  <h2>Tải ảnh lên</h2>
+                  <p className="template-preview-meta">
+                    {pendingTemplateUploads.length} ảnh đang chờ ·{" "}
+                    {pendingTemplateUploads.filter((upload) => upload.status === "saved").length} ảnh đã tải xong
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title="Đóng"
+                  disabled={isUploadingAsset}
+                  onClick={() => setPendingTemplateUploads([])}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="project-upload-modal-list">
+                {pendingTemplateUploads.map((upload) => (
+                  <div key={upload.id} className={`project-upload-modal-item ${upload.status}`}>
+                    <img src={upload.dataUrl} alt="" />
+                    <label>
+                      Tên ảnh
+                      <input
+                        value={upload.name}
+                        disabled={upload.status === "uploading" || upload.status === "saved"}
+                        onChange={(event) =>
+                          updatePendingTemplateUpload(upload.id, { name: event.target.value })
+                        }
+                      />
+                    </label>
+                    <span>
+                      {upload.status === "uploading"
+                        ? "Đang tải lên"
+                        : upload.status === "saved"
+                          ? "Đã tải xong"
+                          : upload.status === "error"
+                            ? upload.error || "Lỗi tải ảnh"
+                            : `${upload.width} x ${upload.height}px`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              {templateLibraryError ? <div className="project-upload-modal-message">{templateLibraryError}</div> : null}
+              <div className="template-preview-actions">
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={isUploadingAsset}
+                  onClick={() => setPendingTemplateUploads([])}
+                >
+                  {pendingTemplateUploads.every((upload) => upload.status === "saved") ? "Đóng" : "Hủy"}
+                </button>
+                <button
+                  type="button"
+                  className="btn blue"
+                  disabled={isUploadingAsset || pendingTemplateUploads.every((upload) => upload.status === "saved")}
+                  onClick={savePendingTemplateUpload}
+                >
+                  {isUploadingAsset ? "Đang tải..." : "Lưu tất cả"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {pendingDesignFolderId ? (
+          <div className="modal-backdrop" role="dialog" aria-modal="true">
+            <form className="admin-modal create-design-modal" onSubmit={submitCreateDesign}>
+              <div className="modal-head">
+                <div>
+                  <h2>Tạo thiết kế mới</h2>
+                  <p className="template-preview-meta">Nhập tên thiết kế trước khi tạo file.</p>
+                </div>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title="Đóng"
+                  onClick={closeCreateDesignModal}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="form-group">
+                <label htmlFor="new-design-name">Tên thiết kế</label>
+                <input
+                  id="new-design-name"
+                  autoFocus
+                  value={newDesignName}
+                  onChange={(event) => setNewDesignName(event.target.value)}
+                  placeholder="Ví dụ: Mẫu căn 2PN"
+                />
+              </div>
+              <div className="template-preview-actions">
+                <button type="button" className="btn" onClick={closeCreateDesignModal}>
+                  Hủy
+                </button>
+                <button type="submit" className="btn blue">
+                  Tạo thiết kế
+                </button>
+              </div>
+            </form>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       <aside className="side-nav canva-rail">
@@ -4471,44 +5991,15 @@ export default function App() {
         <button
           type="button"
           className={activeDesignPanel === "text" ? "rail-tab active" : "rail-tab"}
-          title={isAdmin ? "Text" : "Data"}
+          title={isAdminWorkspace ? "Text" : "Data"}
           aria-pressed={activeDesignPanel === "text"}
           onClick={() => setActiveDesignPanel("text")}
         >
-          {isAdmin ? <Type size={24} /> : <FileSpreadsheet size={24} />}
-          <span>{isAdmin ? "Text" : "Data"}</span>
+          {isAdminWorkspace ? <Type size={24} /> : <FileSpreadsheet size={24} />}
+          <span>{isAdminWorkspace ? "Text" : "Data"}</span>
         </button>
 
-        <div className="rail-pages">
-          <button
-            type="button"
-            className="rail-icon-btn"
-            title="Add page"
-            aria-label="Add page"
-            onClick={addPage}
-          >
-            <Plus size={20} />
-          </button>
-          <div className="rail-page-dots" aria-label="Pages">
-            {appState.templates.map((item, index) => (
-              <button
-                key={item.id}
-                type="button"
-                className={
-                  item.id === appState.activeTemplateId && !isManagementPageOpen
-                    ? "rail-page-dot active"
-                    : "rail-page-dot"
-                }
-                title={item.name}
-                onClick={() => activatePage(item.id)}
-              >
-                {index + 1}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {isAdmin ? (
+        {isAdminWorkspace ? (
           <div className="rail-admin" ref={settingsMenuRef}>
             <button
               type="button"
@@ -4521,7 +6012,13 @@ export default function App() {
             </button>
             {showSettingsMenu ? (
               <div className="rail-popover" role="menu">
-                <button type="button" onClick={openTemplateLibraryModal}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActiveDesignPanel("images");
+                    setShowSettingsMenu(false);
+                  }}
+                >
                   <ImageUp size={16} />
                   Images
                 </button>
@@ -4550,27 +6047,28 @@ export default function App() {
       <main className="main-panel">
         <header className="admin-header canva-topbar">
           <div className="topbar-left">
-            <img src="https://eventci.vercel.app/favicon.ico" alt="" className="topbar-logo" />
-            <div className="history-controls topbar-history" aria-label="Undo and redo">
+            {isAdminWorkspace ? (
               <button
                 type="button"
-                className="history-btn"
-                title="Undo (Ctrl+Z)"
-                onClick={undoLastChange}
-                disabled={!canUndo}
+                className="topbar-folder-back-btn"
+                title="Quay lại thư mục của thiết kế"
+                aria-label="Quay lại thư mục của thiết kế"
+                onClick={openCurrentTemplateFolder}
               >
-                <Undo2 size={17} />
+                <ArrowLeft size={17} />
+                <span>Quay lại thư mục</span>
               </button>
+            ) : (
               <button
                 type="button"
-                className="history-btn"
-                title="Redo (Ctrl+Y)"
-                onClick={redoLastChange}
-                disabled={!canRedo}
+                className="topbar-logo-btn"
+                title="Về trang quản lý"
+                aria-label="Về trang quản lý"
+                onClick={openTemplateLibraryModal}
               >
-                <Redo2 size={17} />
+                <img src={EDITOR_LOGO_URL} alt="OneHousing" className="topbar-logo" />
               </button>
-            </div>
+            )}
           </div>
           <div className="topbar-title-wrap" ref={pageSizeMenuRef}>
             <button
@@ -4590,12 +6088,30 @@ export default function App() {
                   applyPageSizeDraft();
                 }}
               >
-                <div className="page-size-popover-title">Page size</div>
+                <div className="page-size-popover-title">
+                  {isAdminWorkspace ? "Thông tin trang" : "Kích thước trang"}
+                </div>
+                {isAdminWorkspace ? (
+                  <label className="page-name-field">
+                    <span>Tên trang</span>
+                    <input
+                      autoFocus
+                      value={pageSizeDraft.name}
+                      onChange={(event) =>
+                        setPageSizeDraft((current) => ({
+                          ...current,
+                          name: event.target.value
+                        }))
+                      }
+                      placeholder="Nhập tên trang"
+                    />
+                  </label>
+                ) : null}
                 <div className="page-size-grid">
                   <label>
                     <span>W</span>
                     <input
-                      autoFocus
+                      autoFocus={!isAdminWorkspace}
                       type="number"
                       min={64}
                       max={10000}
@@ -4625,7 +6141,7 @@ export default function App() {
                   </label>
                 </div>
                 <button type="submit" className="page-size-apply-btn">
-                  Apply
+                  Áp dụng
                 </button>
               </form>
             ) : null}
@@ -4690,6 +6206,16 @@ export default function App() {
                 </div>
               ) : null}
             </div>
+            {isAdminWorkspace ? (
+              <button
+                type="button"
+                className="topbar-template-save-btn"
+                onClick={saveTemplateForClient}
+              >
+                <Save size={17} />
+                Lưu template
+              </button>
+            ) : null}
           </div>
         </header>
 
@@ -4810,7 +6336,7 @@ export default function App() {
                   </div>
                 )}
 
-                {isAdmin ? (
+                {isAdminWorkspace ? (
                   <button type="button" className="btn full image-manager-btn" onClick={openTemplateLibraryModal}>
                     <FolderPlus size={18} />
                     Manage image folders
@@ -4821,13 +6347,13 @@ export default function App() {
               <>
                 <div className="panel-head compact">
                   <div>
-                    <h2>{isAdmin ? "Text" : "Data"}</h2>
-                    <p>{isAdmin ? "Add text to the canvas" : "Chọn mã căn để tự động điền thông tin trên ảnh"}</p>
+                    <h2>{isAdminWorkspace ? "Text" : "Data"}</h2>
+                    <p>{isAdminWorkspace ? "Add text to the canvas" : "Chọn mã căn để tự động điền thông tin trên ảnh"}</p>
                   </div>
-                  {isAdmin ? <Type size={20} /> : <FileSpreadsheet size={20} />}
+                  {isAdminWorkspace ? <Type size={20} /> : <FileSpreadsheet size={20} />}
                 </div>
 
-                {isAdmin ? (
+                {isAdminWorkspace ? (
                   <>
                     <div className="text-preset-list">
                       <button type="button" onClick={() => addFreeTextLayer(120, 120, "Add a heading", 56)}>
@@ -4867,7 +6393,7 @@ export default function App() {
                 {hasSelectedDataset ? (
                   <>
                     <div className="form-group">
-                      <label>{isAdmin ? "Preview row" : "Mã căn"}</label>
+                      <label>{isAdminWorkspace ? "Preview row" : "Mã căn"}</label>
                       <CustomSelect
                         value={String(selectedRowIndex)}
                         options={dataset.rows.map((row, index) => ({
@@ -4876,11 +6402,11 @@ export default function App() {
                         }))}
                         onChange={(nextValue) => setSelectedRowIndex(Number(nextValue))}
                         searchable
-                        searchPlaceholder={isAdmin ? "Search row" : "Tìm mã căn"}
+                        searchPlaceholder={isAdminWorkspace ? "Search row" : "Tìm mã căn"}
                       />
                     </div>
 
-                    {isAdmin ? (
+                    {isAdminWorkspace ? (
                       <div className="column-section">
                         <div className="section-label">Data text</div>
                         <div className="column-grid">
@@ -5374,10 +6900,10 @@ export default function App() {
                     }}
                     onMouseDown={beginCanvasSelection}
                     onMouseMove={updateCanvasSelection}
-                    onMouseUp={finishCanvasSelection}
+                    onMouseUp={() => finishCanvasSelection()}
                     onTouchStart={beginCanvasSelection}
                     onTouchMove={updateCanvasSelection}
-                    onTouchEnd={finishCanvasSelection}
+                    onTouchEnd={() => finishCanvasSelection()}
                   >
                   <Layer>
                     {backgroundImage ? (
@@ -5560,7 +7086,70 @@ export default function App() {
                 onPointerUp={(event) => event.stopPropagation()}
                 onClick={(event) => event.stopPropagation()}
               >
+                <div className="history-controls bottom-history-controls" aria-label="Undo and redo">
+                  <button
+                    type="button"
+                    className="history-btn"
+                    title="Undo (Ctrl+Z)"
+                    onClick={undoLastChange}
+                    disabled={!canUndo}
+                  >
+                    <Undo2 size={17} />
+                  </button>
+                  <button
+                    type="button"
+                    className="history-btn"
+                    title="Redo (Ctrl+Y)"
+                    onClick={redoLastChange}
+                    disabled={!canRedo}
+                  >
+                    <Redo2 size={17} />
+                  </button>
+                </div>
+                <div className="bottom-tool-group" aria-label="Canvas tools">
+                  <button
+                    type="button"
+                    className={activeCanvasTool === "move" ? "tool-btn active" : "tool-btn"}
+                    title="Move (V)"
+                    aria-pressed={activeCanvasTool === "move"}
+                    onClick={() => setActiveCanvasTool("move")}
+                  >
+                    <MousePointer2 size={17} />
+                    <span>Move</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={activeCanvasTool === "hand" ? "tool-btn active" : "tool-btn"}
+                    title="Hand tool (H)"
+                    aria-pressed={activeCanvasTool === "hand"}
+                    onClick={() => setActiveCanvasTool("hand")}
+                  >
+                    <Hand size={17} />
+                    <span>Hand</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={activeCanvasTool === "text" ? "tool-btn active" : "tool-btn"}
+                    title="Thêm text (T)"
+                    aria-pressed={activeCanvasTool === "text"}
+                    onClick={() => setActiveCanvasTool("text")}
+                    disabled={!canAddTextLayer}
+                  >
+                    <Type size={18} />
+                    <span>Text</span>
+                  </button>
+                </div>
                 <div className="zoom-controls bottom-zoom-controls" aria-label="Zoom controls">
+                  <button
+                    type="button"
+                    className="zoom-btn"
+                    title="Zoom out"
+                    aria-label="Zoom out"
+                    disabled={zoomLevel <= MIN_ZOOM}
+                    onClick={() => changeZoom(-0.1)}
+                  >
+                    <Minus size={16} />
+                  </button>
                   <input
                     className="zoom-slider"
                     type="range"
@@ -5574,6 +7163,16 @@ export default function App() {
                   <div className="zoom-value slider-zoom-value">{zoomPercent}%</div>
                   <button
                     type="button"
+                    className="zoom-btn"
+                    title="Zoom in"
+                    aria-label="Zoom in"
+                    disabled={zoomLevel >= MAX_ZOOM}
+                    onClick={() => changeZoom(0.1)}
+                  >
+                    <Plus size={16} />
+                  </button>
+                  <button
+                    type="button"
                     className="fit-btn"
                     title="Fit"
                     onClick={fitCanvasToFrame}
@@ -5582,37 +7181,6 @@ export default function App() {
                     Fit
                   </button>
                 </div>
-                <button
-                  type="button"
-                  className={activeCanvasTool === "move" ? "tool-btn active" : "tool-btn"}
-                  title="Move (V)"
-                  aria-pressed={activeCanvasTool === "move"}
-                  onClick={() => setActiveCanvasTool("move")}
-                >
-                  <MousePointer2 size={17} />
-                  <span>Move</span>
-                </button>
-                <button
-                  type="button"
-                  className={activeCanvasTool === "hand" ? "tool-btn active" : "tool-btn"}
-                  title="Hand tool (H)"
-                  aria-pressed={activeCanvasTool === "hand"}
-                  onClick={() => setActiveCanvasTool("hand")}
-                >
-                  <Hand size={17} />
-                  <span>Hand</span>
-                </button>
-                <button
-                  type="button"
-                  className={activeCanvasTool === "text" ? "tool-btn active" : "tool-btn"}
-                  title="Thêm text (T)"
-                  aria-pressed={activeCanvasTool === "text"}
-                  onClick={() => setActiveCanvasTool("text")}
-                  disabled={!canAddTextLayer}
-                >
-                  <Type size={18} />
-                  <span>Text</span>
-                </button>
               </div>
             </div>
           </section>
@@ -6187,9 +7755,10 @@ export default function App() {
                       <input
                         type="file"
                         accept="image/*"
+                        multiple
                         disabled={!selectedTemplateFolder}
                         onChange={(event) => {
-                          prepareTemplateUpload(event.target.files?.[0]);
+                          prepareTemplateUploads(Array.from(event.target.files || []));
                           event.target.value = "";
                         }}
                       />
@@ -6222,37 +7791,44 @@ export default function App() {
                   </div>
                 ) : null}
 
-                {pendingTemplateUpload ? (
+                {pendingTemplateUploads.length ? (
                   <div className="pending-template-card">
-                    <img src={pendingTemplateUpload.dataUrl} alt="" />
+                    <div className="project-upload-list">
+                      {pendingTemplateUploads.map((upload) => (
+                        <div key={upload.id} className={`project-upload-item ${upload.status}`}>
+                          <img src={upload.dataUrl} alt="" />
+                          <span>{upload.status === "saved" ? "Đã tải xong" : upload.status === "uploading" ? "Đang tải lên" : upload.status === "error" ? upload.error || "Lỗi tải ảnh" : "Sẵn sàng tải"}</span>
+                        </div>
+                      ))}
+                    </div>
                     <div className="pending-template-main">
                       <div className="form-group">
                         <label>Tên ảnh mới</label>
                         <input
-                          value={pendingTemplateUpload.name}
+                          value={pendingTemplateUploads[0]?.name || ""}
                           onChange={(event) =>
-                            setPendingTemplateUpload((current) =>
-                              current ? { ...current, name: event.target.value } : current
-                            )
+                            pendingTemplateUploads[0]
+                              ? updatePendingTemplateUpload(pendingTemplateUploads[0].id, { name: event.target.value })
+                              : undefined
                           }
                           placeholder="Nhập tên ảnh"
                         />
                       </div>
                       <div className="pending-template-meta">
-                        {pendingTemplateUpload.width} x {pendingTemplateUpload.height}px
+                        {pendingTemplateUploads.length} ảnh đang chờ · {pendingTemplateUploads.filter((upload) => upload.status === "saved").length} ảnh đã tải xong
                       </div>
                       <div className="pending-template-actions">
                         <button
                           type="button"
                           className="btn"
-                          onClick={() => setPendingTemplateUpload(null)}
+                          onClick={() => setPendingTemplateUploads([])}
                         >
                           Hủy
                         </button>
                         <button
                           type="button"
                           className="btn blue"
-                          disabled={isUploadingAsset}
+                          disabled={isUploadingAsset || pendingTemplateUploads.every((upload) => upload.status === "saved")}
                           onClick={savePendingTemplateUpload}
                         >
                           Lưu ảnh
