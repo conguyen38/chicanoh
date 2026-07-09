@@ -5,6 +5,7 @@ import Konva from "konva";
 import {
   Stage,
   Layer,
+  Circle as KonvaCircle,
   Image as KonvaImage,
   Line,
   Rect,
@@ -21,11 +22,13 @@ import {
   AlignVerticalJustifyCenter,
   AlignVerticalJustifyEnd,
   AlignVerticalJustifyStart,
+  AlertCircle,
   ArrowDownUp,
   ArrowLeft,
   ArrowUpDown,
   BadgeCheck,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Circle,
@@ -34,10 +37,10 @@ import {
   Download,
   Eye,
   FileSpreadsheet,
-  Folder,
   FolderPlus,
   Hand,
   ImageUp,
+  LoaderCircle,
   Lock,
   LogOut,
   Maximize2,
@@ -69,6 +72,9 @@ type CanvasTool = "move" | "hand" | "text";
 type DesignPanel = "elements" | "images" | "text";
 type ShapeVariant = "frame" | "rect" | "circle" | "image";
 type ImageUsage = "frame-fill" | "standalone";
+type CornerRadiusKey = "topLeft" | "topRight" | "bottomRight" | "bottomLeft";
+
+type CornerRadii = Record<CornerRadiusKey, number>;
 
 type InlineTextEditor = {
   layerId: string;
@@ -123,9 +129,14 @@ type TextLayer = {
   stroke?: string;
   strokeWidth?: number;
   cornerRadius?: number;
+  cornerRadii?: CornerRadii;
   opacity?: number;
   imageDataUrl?: string;
   imageName?: string;
+  imageOriginalWidth?: number;
+  imageOriginalHeight?: number;
+  imageCropFocusX?: number;
+  imageCropFocusY?: number;
   imageUsage?: ImageUsage;
   align: "left" | "center" | "right";
   lineHeight: number;
@@ -295,7 +306,7 @@ const FALLBACK_TEXT_LAYER: TextLayer = {
   width: 320,
   fontFamily: "Be Vietnam Pro",
   fontSize: 42,
-  fontWeight: "700",
+  fontWeight: "600",
   fontStyle: "normal",
   color: "#071025",
   align: "left",
@@ -349,6 +360,14 @@ type HexColorInputProps = {
   onChange: (value: string) => void;
   disabled?: boolean;
 };
+
+type ProjectFolderIconProps = {
+  size?: "sm" | "md" | "lg";
+};
+
+function ProjectFolderIcon({ size = "md" }: ProjectFolderIconProps) {
+  return <span className={`project-folder-icon ${size}`} aria-hidden="true" />;
+}
 
 function normalizeHexColor(value: string) {
   const raw = value.trim().replace(/^#/, "");
@@ -774,6 +793,15 @@ const ADMIN_PASSWORD_HASH_KEY = "oh-property-maker-admin-password-hash";
 const DEFAULT_ADMIN_ACCOUNT = "admin";
 const DEFAULT_ADMIN_PASSWORD = "admin";
 const DEFAULT_TEMPLATE_FOLDER_ID = "folder_default";
+const DEFAULT_TEMPLATE_WIDTH = 1200;
+const DEFAULT_TEMPLATE_HEIGHT = 1500;
+const CORNER_RADIUS_MAX = 240;
+const CORNER_RADIUS_KEYS: Array<{ key: CornerRadiusKey; title: string }> = [
+  { key: "topLeft", title: "Góc trên trái" },
+  { key: "topRight", title: "Góc trên phải" },
+  { key: "bottomRight", title: "Góc dưới phải" },
+  { key: "bottomLeft", title: "Góc dưới trái" }
+];
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 0.15;
@@ -999,13 +1027,13 @@ const FONT_WEIGHT_LABELS: Record<string, { label: string; weight: string }> = {
   medium: { label: "Medium", weight: "500" },
   semibold: { label: "Semi Bold", weight: "600" },
   demibold: { label: "Semi Bold", weight: "600" },
-  bold: { label: "Bold", weight: "700" },
-  extrablack: { label: "Extra Black", weight: "900" },
-  ultrablack: { label: "Extra Black", weight: "900" },
-  extrabold: { label: "Extra Bold", weight: "800" },
-  ultrabold: { label: "Extra Bold", weight: "800" },
-  black: { label: "Black", weight: "900" },
-  heavy: { label: "Black", weight: "900" }
+  bold: { label: "Semi Bold", weight: "600" },
+  extrablack: { label: "Semi Bold", weight: "600" },
+  ultrablack: { label: "Semi Bold", weight: "600" },
+  extrabold: { label: "Semi Bold", weight: "600" },
+  ultrabold: { label: "Semi Bold", weight: "600" },
+  black: { label: "Semi Bold", weight: "600" },
+  heavy: { label: "Semi Bold", weight: "600" }
 };
 
 function splitFontWords(value: string) {
@@ -1047,6 +1075,13 @@ function fontStyleDetails(rawStyleName: string) {
   };
 }
 
+function clampFontWeight(value: string | undefined, fallback = "400") {
+  if (!value) return fallback;
+  const normalized = value.toLowerCase() === "bold" || value.toLowerCase() === "bolder" ? 600 : Number(value);
+  if (!Number.isFinite(normalized)) return fallback;
+  return String(Math.min(600, Math.max(100, normalized)));
+}
+
 function layerFontStyleValue(layer: Pick<TextLayer, "fontWeight" | "fontStyle">) {
   return layer.fontStyle === "italic" ? `italic ${layer.fontWeight}` : layer.fontWeight;
 }
@@ -1086,7 +1121,7 @@ function fontInfoFromFileName(fileName: string) {
 }
 async function registerFont(font: CustomFont) {
   if (!("FontFace" in window)) return;
-  const weight = font.fontWeight || "400";
+  const weight = clampFontWeight(font.fontWeight);
   const style = font.fontStyle || "normal";
   const existing = Array.from(document.fonts).some(
     (item) => item.family === font.family && item.weight === weight && item.style === style
@@ -1123,7 +1158,7 @@ function defaultTemplateImage() {
     <rect x="86" y="806" width="908" height="408" rx="34" fill="url(#panel)"/>
     <rect x="130" y="884" width="820" height="2" fill="#dde4f0"/>
     <rect x="130" y="1102" width="820" height="2" fill="#dde4f0"/>
-    <text x="130" y="126" fill="#ffffff" font-family="Arial" font-size="28" font-weight="700">OneHousing</text>
+    <text x="130" y="126" fill="#ffffff" font-family="Arial" font-size="28" font-weight="600">OneHousing</text>
   </svg>`;
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
@@ -1131,6 +1166,103 @@ function defaultTemplateImage() {
 function normalizePositiveNumber(value: unknown, fallback: number) {
   const nextValue = Number(value);
   return Number.isFinite(nextValue) && nextValue > 0 ? nextValue : fallback;
+}
+
+function normalizeOptionalPositiveNumber(value: unknown) {
+  const nextValue = Number(value);
+  return Number.isFinite(nextValue) && nextValue > 0 ? nextValue : undefined;
+}
+
+function clamp01(value: unknown, fallback = 0.5) {
+  const nextValue = Number(value);
+  return Number.isFinite(nextValue) ? Math.min(1, Math.max(0, nextValue)) : fallback;
+}
+
+function clampCornerRadius(value: unknown) {
+  const nextValue = Number(value);
+  return Number.isFinite(nextValue)
+    ? Math.min(CORNER_RADIUS_MAX, Math.max(0, Math.round(nextValue)))
+    : 0;
+}
+
+function normalizeCornerRadii(value: unknown, fallback = 0): CornerRadii | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const source = value as Partial<Record<CornerRadiusKey, unknown>>;
+  return {
+    topLeft: clampCornerRadius(source.topLeft ?? fallback),
+    topRight: clampCornerRadius(source.topRight ?? fallback),
+    bottomRight: clampCornerRadius(source.bottomRight ?? fallback),
+    bottomLeft: clampCornerRadius(source.bottomLeft ?? fallback)
+  };
+}
+
+function cornerRadiiFromUniform(value: unknown): CornerRadii {
+  const radius = clampCornerRadius(value);
+  return {
+    topLeft: radius,
+    topRight: radius,
+    bottomRight: radius,
+    bottomLeft: radius
+  };
+}
+
+function getLayerCornerRadii(layer: Pick<TextLayer, "cornerRadius" | "cornerRadii">): CornerRadii {
+  return layer.cornerRadii || cornerRadiiFromUniform(layer.cornerRadius || 0);
+}
+
+function areCornerRadiiUniform(radii: CornerRadii) {
+  return (
+    radii.topLeft === radii.topRight &&
+    radii.topLeft === radii.bottomRight &&
+    radii.topLeft === radii.bottomLeft
+  );
+}
+
+function getCornerRadiusPreviewValue(layer: Pick<TextLayer, "cornerRadius" | "cornerRadii">) {
+  const radii = getLayerCornerRadii(layer);
+  return areCornerRadiiUniform(radii) ? radii.topLeft : clampCornerRadius(layer.cornerRadius || 0);
+}
+
+function getShapeCornerRadius(
+  layer: Pick<TextLayer, "shapeVariant" | "cornerRadius" | "cornerRadii">,
+  width: number,
+  height: number
+) {
+  if (layer.shapeVariant === "circle") return Math.min(width, height) / 2;
+  if (layer.cornerRadii) {
+    const radii = getLayerCornerRadii(layer);
+    return [radii.topLeft, radii.topRight, radii.bottomRight, radii.bottomLeft];
+  }
+  return layer.cornerRadius || 0;
+}
+
+function roundedRectPath(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radii: CornerRadii
+) {
+  const maxRadius = Math.max(0, Math.min(width, height) / 2);
+  const topLeft = Math.min(radii.topLeft, maxRadius);
+  const topRight = Math.min(radii.topRight, maxRadius);
+  const bottomRight = Math.min(radii.bottomRight, maxRadius);
+  const bottomLeft = Math.min(radii.bottomLeft, maxRadius);
+
+  return [
+    `M ${x + topLeft} ${y}`,
+    `H ${x + width - topRight}`,
+    topRight ? `Q ${x + width} ${y} ${x + width} ${y + topRight}` : `L ${x + width} ${y}`,
+    `V ${y + height - bottomRight}`,
+    bottomRight
+      ? `Q ${x + width} ${y + height} ${x + width - bottomRight} ${y + height}`
+      : `L ${x + width} ${y + height}`,
+    `H ${x + bottomLeft}`,
+    bottomLeft ? `Q ${x} ${y + height} ${x} ${y + height - bottomLeft}` : `L ${x} ${y + height}`,
+    `V ${y + topLeft}`,
+    topLeft ? `Q ${x} ${y} ${x + topLeft} ${y}` : `L ${x} ${y}`,
+    "Z"
+  ].join(" ");
 }
 
 function normalizeLayer(layer: Partial<TextLayer> | null | undefined, index = 0): TextLayer {
@@ -1200,10 +1332,10 @@ function normalizeLayer(layer: Partial<TextLayer> | null | undefined, index = 0)
         ? layer.fontFamily
         : FALLBACK_TEXT_LAYER.fontFamily,
     fontSize: normalizePositiveNumber(layer?.fontSize, FALLBACK_TEXT_LAYER.fontSize),
-    fontWeight:
-      typeof layer?.fontWeight === "string" && layer.fontWeight
-        ? layer.fontWeight
-        : FALLBACK_TEXT_LAYER.fontWeight,
+    fontWeight: clampFontWeight(
+      typeof layer?.fontWeight === "string" ? layer.fontWeight : undefined,
+      FALLBACK_TEXT_LAYER.fontWeight
+    ),
     fontStyle:
       layer?.fontStyle === "italic" || layer?.fontStyle === "normal"
         ? layer.fontStyle
@@ -1219,9 +1351,11 @@ function normalizeLayer(layer: Partial<TextLayer> | null | undefined, index = 0)
     cornerRadius: Number.isFinite(Number(layer?.cornerRadius))
       ? Math.max(0, Number(layer?.cornerRadius))
       : kind === "shape"
-        ? layer?.shapeVariant === "frame"
-          ? 28
-          : 0
+        ? 0
+        : undefined,
+    cornerRadii:
+      kind === "shape"
+        ? normalizeCornerRadii(layer?.cornerRadii, layer?.cornerRadius || 0)
         : undefined,
     opacity: Number.isFinite(Number(layer?.opacity))
       ? Math.min(1, Math.max(0.05, Number(layer?.opacity)))
@@ -1231,6 +1365,14 @@ function normalizeLayer(layer: Partial<TextLayer> | null | undefined, index = 0)
       kind === "shape" && typeof layer?.imageName === "string"
         ? layer.imageName
         : undefined,
+    imageOriginalWidth: normalizedImageDataUrl
+      ? normalizeOptionalPositiveNumber(layer?.imageOriginalWidth)
+      : undefined,
+    imageOriginalHeight: normalizedImageDataUrl
+      ? normalizeOptionalPositiveNumber(layer?.imageOriginalHeight)
+      : undefined,
+    imageCropFocusX: normalizedImageDataUrl ? clamp01(layer?.imageCropFocusX) : undefined,
+    imageCropFocusY: normalizedImageDataUrl ? clamp01(layer?.imageCropFocusY) : undefined,
     imageUsage: normalizedImageUsage,
     align: align === "center" || align === "right" || align === "left" ? align : "left",
     lineHeight: normalizePositiveNumber(layer?.lineHeight, FALLBACK_TEXT_LAYER.lineHeight),
@@ -1258,8 +1400,8 @@ function normalizeTemplate(template: Partial<Template> | null | undefined, index
       typeof template?.folderId === "string" && template.folderId
         ? template.folderId
         : DEFAULT_TEMPLATE_FOLDER_ID,
-    width: normalizePositiveNumber(template?.width, 1080),
-    height: normalizePositiveNumber(template?.height, 1350),
+    width: normalizePositiveNumber(template?.width, DEFAULT_TEMPLATE_WIDTH),
+    height: normalizePositiveNumber(template?.height, DEFAULT_TEMPLATE_HEIGHT),
     backgroundDataUrl:
       typeof template?.backgroundDataUrl === "string"
         ? template.backgroundDataUrl
@@ -1303,7 +1445,7 @@ function normalizeTemplateImage(
 function defaultTemplateFolder(): TemplateFolder {
   return {
     id: DEFAULT_TEMPLATE_FOLDER_ID,
-    name: "Ảnh mẫu",
+    name: "Dự án mẫu",
     parentId: null,
     createdAt: new Date().toISOString()
   };
@@ -1318,7 +1460,7 @@ function normalizeTemplateFolder(
     name:
       typeof folder?.name === "string" && folder.name.trim()
         ? folder.name
-        : `Thư mục ${index + 1}`,
+        : `Dự án ${index + 1}`,
     parentId:
       typeof folder?.parentId === "string" && folder.parentId ? folder.parentId : null,
     createdAt:
@@ -1399,8 +1541,8 @@ function createInitialState(): AppState {
     id: "template_default",
     name: "Trang 1",
     folderId: DEFAULT_TEMPLATE_FOLDER_ID,
-    width: 1080,
-    height: 1350,
+    width: DEFAULT_TEMPLATE_WIDTH,
+    height: DEFAULT_TEMPLATE_HEIGHT,
     backgroundDataUrl: "",
     updatedAt: new Date().toISOString(),
     layers: []
@@ -1410,7 +1552,7 @@ function createInitialState(): AppState {
     templateFolders: [
       {
         id: DEFAULT_TEMPLATE_FOLDER_ID,
-        name: "Ảnh mẫu",
+        name: "Dự án mẫu",
         parentId: null,
         createdAt: new Date().toISOString()
       }
@@ -1493,7 +1635,7 @@ function normalizeAppState(parsed: Partial<AppState> | null | undefined): AppSta
     ...image,
     folderId: folderIds.has(image.folderId) ? image.folderId : fallbackFolderId
   }));
-  const templates = parsedAny.templates.filter((template) => !template.libraryDataUrl).map((template, index) => {
+  const templates = removeDefaultPlaceholderTemplates(parsedAny.templates.filter((template) => !template.libraryDataUrl).map((template, index) => {
     const normalizedTemplate = normalizeTemplate(template, index);
     return {
       ...normalizedTemplate,
@@ -1501,14 +1643,14 @@ function normalizeAppState(parsed: Partial<AppState> | null | undefined): AppSta
         ? normalizedTemplate.folderId
         : fallbackFolderId
     };
-  });
+  }));
   if (!templates.length) {
     templates.push({
       id: uid("template"),
       name: "Trang 1",
       folderId: fallbackFolderId,
-      width: 1080,
-      height: 1350,
+      width: DEFAULT_TEMPLATE_WIDTH,
+      height: DEFAULT_TEMPLATE_HEIGHT,
       backgroundDataUrl: "",
       layers: [],
       updatedAt: new Date().toISOString()
@@ -1528,30 +1670,57 @@ function normalizeAppState(parsed: Partial<AppState> | null | undefined): AppSta
     activeTemplateId,
     datasets,
     activeDatasetId: "",
-    customFonts: Array.isArray(parsed.customFonts) ? parsed.customFonts : []
+    customFonts: Array.isArray(parsed.customFonts)
+      ? parsed.customFonts.map((font) => ({
+          ...font,
+          fontWeight: clampFontWeight(font.fontWeight)
+        }))
+      : []
   };
 }
 
 function persistedLibraryState(appState: AppState): AppState {
   const initialState = createInitialState();
+  const templates = removeDefaultPlaceholderTemplates(appState.templates);
   return {
     ...initialState,
     templateFolders: appState.templateFolders,
     templateImages: appState.templateImages,
+    templates,
+    activeTemplateId: templates.some((template) => template.id === appState.activeTemplateId)
+      ? appState.activeTemplateId
+      : templates[0]?.id || initialState.activeTemplateId,
+    activeDatasetId: appState.activeDatasetId,
     datasets: appState.datasets,
     customFonts: appState.customFonts
   };
 }
 
 function mergePersistedLibraries(workspaceState: AppState, persistedState: AppState): AppState {
+  const shouldUsePersistedTemplates =
+    hasMeaningfulTemplates(persistedState.templates) || !hasMeaningfulTemplates(workspaceState.templates);
+  const templates = removeDefaultPlaceholderTemplates(
+    shouldUsePersistedTemplates && persistedState.templates.length
+      ? persistedState.templates
+      : workspaceState.templates
+  );
+  const activeTemplateId = templates.some((template) => template.id === persistedState.activeTemplateId)
+    ? persistedState.activeTemplateId
+    : templates.some((template) => template.id === workspaceState.activeTemplateId)
+      ? workspaceState.activeTemplateId
+      : templates[0]?.id || workspaceState.activeTemplateId;
   return {
     ...workspaceState,
     templateFolders: persistedState.templateFolders,
     templateImages: persistedState.templateImages,
+    templates,
+    activeTemplateId,
     datasets: persistedState.datasets,
     customFonts: persistedState.customFonts,
-    activeDatasetId: persistedState.datasets.some((dataset) => dataset.id === workspaceState.activeDatasetId)
-      ? workspaceState.activeDatasetId
+    activeDatasetId: persistedState.datasets.some((dataset) => dataset.id === persistedState.activeDatasetId)
+      ? persistedState.activeDatasetId
+      : persistedState.datasets.some((dataset) => dataset.id === workspaceState.activeDatasetId)
+        ? workspaceState.activeDatasetId
       : ""
   };
 }
@@ -1566,18 +1735,52 @@ function appStateForLocalBackup(appState: AppState) {
 }
 
 function workspaceStateForSession(appState: AppState) {
+  const templates = removeDefaultPlaceholderTemplates(appState.templates);
   return {
-    templates: appState.templates,
-    activeTemplateId: appState.activeTemplateId,
+    templates,
+    activeTemplateId: templates.some((template) => template.id === appState.activeTemplateId)
+      ? appState.activeTemplateId
+      : templates[0]?.id || appState.activeTemplateId,
     activeDatasetId: appState.activeDatasetId
   };
+}
+
+function latestTemplateUpdateTime(templates: Partial<Template>[] | undefined) {
+  if (!Array.isArray(templates) || !templates.length) return 0;
+  return templates.reduce((latest, template) => {
+    const time = new Date(template.updatedAt || "").getTime();
+    return Number.isFinite(time) ? Math.max(latest, time) : latest;
+  }, 0);
+}
+
+function isDefaultPlaceholderTemplate(template: Partial<Template> | null | undefined) {
+  const name = typeof template?.name === "string" ? template.name.trim() : "";
+  const isDefaultName = /^(trang|page)\s*1$/i.test(name);
+  return Boolean(
+    template &&
+      isDefaultName &&
+      !template.backgroundDataUrl &&
+      (!Array.isArray(template.layers) || !template.layers.length)
+  );
+}
+
+function removeDefaultPlaceholderTemplates<T extends Partial<Template>>(templates: T[]) {
+  const meaningfulTemplates = templates.filter((template) => !isDefaultPlaceholderTemplate(template));
+  return meaningfulTemplates.length ? meaningfulTemplates : templates;
+}
+
+function hasMeaningfulTemplates(templates: Partial<Template>[] | undefined) {
+  if (!Array.isArray(templates) || !templates.length) return false;
+  return templates.some((template) => !isDefaultPlaceholderTemplate(template));
 }
 
 function mergeSessionWorkspace(appState: AppState, workspace: Partial<AppState> | null | undefined) {
   if (!workspace || !Array.isArray(workspace.templates) || !workspace.templates.length) {
     return appState;
   }
-  const templates = workspace.templates.map((template, index) => normalizeTemplate(template, index));
+  const templates = removeDefaultPlaceholderTemplates(
+    workspace.templates.map((template, index) => normalizeTemplate(template, index))
+  );
   const activeTemplateId = templates.some((template) => template.id === workspace.activeTemplateId)
     ? workspace.activeTemplateId || templates[0].id
     : templates[0].id;
@@ -1595,19 +1798,22 @@ function mergeSessionWorkspace(appState: AppState, workspace: Partial<AppState> 
 function loadState() {
   try {
     let nextState = createInitialState();
+    let savedTemplateUpdateTime = 0;
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
-      nextState = mergePersistedLibraries(
-        nextState,
-        normalizeAppState(JSON.parse(saved) as AppState)
-      );
+      const parsedSaved = JSON.parse(saved) as Partial<AppState>;
+      savedTemplateUpdateTime = hasMeaningfulTemplates(parsedSaved.templates)
+        ? latestTemplateUpdateTime(parsedSaved.templates)
+        : 0;
+      const normalizedSaved = normalizeAppState(parsedSaved);
+      nextState = mergePersistedLibraries(nextState, normalizedSaved);
     }
     const sessionWorkspace = sessionStorage.getItem(WORKSPACE_SESSION_KEY);
     if (sessionWorkspace) {
-      nextState = mergeSessionWorkspace(
-        nextState,
-        JSON.parse(sessionWorkspace) as Partial<AppState>
-      );
+      const parsedSession = JSON.parse(sessionWorkspace) as Partial<AppState>;
+      if (latestTemplateUpdateTime(parsedSession.templates) >= savedTemplateUpdateTime) {
+        nextState = mergeSessionWorkspace(nextState, parsedSession);
+      }
     }
     return nextState;
   } catch {
@@ -1644,26 +1850,63 @@ function useImage(src: string) {
 function getCoverCrop(
   image: { width: number; height: number } | null,
   width: number,
-  height: number
+  height: number,
+  focusX = 0.5,
+  focusY = 0.5
 ) {
   if (!image) return undefined;
   const imageRatio = image.width / image.height;
   const canvasRatio = width / height;
   if (imageRatio > canvasRatio) {
     const cropWidth = image.height * canvasRatio;
+    const maxX = Math.max(0, image.width - cropWidth);
     return {
-      x: (image.width - cropWidth) / 2,
+      x: maxX * clamp01(focusX),
       y: 0,
       width: cropWidth,
       height: image.height
     };
   }
   const cropHeight = image.width / canvasRatio;
+  const maxY = Math.max(0, image.height - cropHeight);
   return {
     x: 0,
-    y: (image.height - cropHeight) / 2,
+    y: maxY * clamp01(focusY),
     width: image.width,
     height: cropHeight
+  };
+}
+
+function getCoverImageContentRect(
+  image: { width: number; height: number } | null,
+  width: number,
+  height: number,
+  focusX = 0.5,
+  focusY = 0.5
+) {
+  const crop = getCoverCrop(image, width, height, focusX, focusY);
+  if (!image || !crop) return null;
+  const scaleX = width / crop.width;
+  const scaleY = height / crop.height;
+  return {
+    x: -crop.x * scaleX,
+    y: -crop.y * scaleY,
+    width: image.width * scaleX,
+    height: image.height * scaleY
+  };
+}
+
+function getContainedImageSize(
+  image: Pick<TemplateImage, "width" | "height">,
+  maxWidth: number,
+  maxHeight: number
+) {
+  const naturalWidth = normalizePositiveNumber(image.width, maxWidth);
+  const naturalHeight = normalizePositiveNumber(image.height, maxHeight);
+  const scale = Math.min(maxWidth / naturalWidth, maxHeight / naturalHeight, 1);
+  return {
+    width: Math.max(24, Math.round(naturalWidth * scale)),
+    height: Math.max(24, Math.round(naturalHeight * scale))
   };
 }
 
@@ -1736,10 +1979,9 @@ function ProjectDesignThumbnail({ template }: { template: Template }) {
           const strokeWidth = layer.strokeWidth || 0;
           const fill = layer.fill || "#e9f8ff";
           const stroke = layer.stroke || "transparent";
-          const radius =
-            layer.shapeVariant === "circle"
-              ? Math.min(layerWidth, layerHeight) / 2
-              : layer.cornerRadius || 0;
+          const cornerRadius = getShapeCornerRadius(layer, layerWidth, layerHeight);
+          const customRadii = Array.isArray(cornerRadius) ? getLayerCornerRadii(layer) : null;
+          const radius = typeof cornerRadius === "number" ? cornerRadius : 0;
           const clipId = `thumb-${clipPrefix}-${layer.id.replace(/[^a-zA-Z0-9_-]/g, "")}`;
 
           if (layer.imageDataUrl) {
@@ -1754,14 +1996,18 @@ function ProjectDesignThumbnail({ template }: { template: Template }) {
                         r={Math.min(layerWidth, layerHeight) / 2}
                       />
                     ) : (
-                      <rect
-                        x={layer.x}
-                        y={layer.y}
-                        width={layerWidth}
-                        height={layerHeight}
-                        rx={radius}
-                        ry={radius}
-                      />
+                      customRadii ? (
+                        <path d={roundedRectPath(layer.x, layer.y, layerWidth, layerHeight, customRadii)} />
+                      ) : (
+                        <rect
+                          x={layer.x}
+                          y={layer.y}
+                          width={layerWidth}
+                          height={layerHeight}
+                          rx={radius}
+                          ry={radius}
+                        />
+                      )
                     )}
                   </clipPath>
                 </defs>
@@ -1771,7 +2017,7 @@ function ProjectDesignThumbnail({ template }: { template: Template }) {
                   y={layer.y}
                   width={layerWidth}
                   height={layerHeight}
-                  preserveAspectRatio="xMidYMid slice"
+                  preserveAspectRatio={layer.imageUsage === "standalone" ? "none" : "xMidYMid slice"}
                   clipPath={`url(#${clipId})`}
                 />
                 {strokeWidth ? (
@@ -1785,17 +2031,26 @@ function ProjectDesignThumbnail({ template }: { template: Template }) {
                       strokeWidth={strokeWidth}
                     />
                   ) : (
-                    <rect
-                      x={layer.x}
-                      y={layer.y}
-                      width={layerWidth}
-                      height={layerHeight}
-                      rx={radius}
-                      ry={radius}
-                      fill="none"
-                      stroke={stroke}
-                      strokeWidth={strokeWidth}
-                    />
+                    customRadii ? (
+                      <path
+                        d={roundedRectPath(layer.x, layer.y, layerWidth, layerHeight, customRadii)}
+                        fill="none"
+                        stroke={stroke}
+                        strokeWidth={strokeWidth}
+                      />
+                    ) : (
+                      <rect
+                        x={layer.x}
+                        y={layer.y}
+                        width={layerWidth}
+                        height={layerHeight}
+                        rx={radius}
+                        ry={radius}
+                        fill="none"
+                        stroke={stroke}
+                        strokeWidth={strokeWidth}
+                      />
+                    )
                   )
                 ) : null}
               </g>
@@ -1814,19 +2069,30 @@ function ProjectDesignThumbnail({ template }: { template: Template }) {
               opacity={opacity}
             />
           ) : (
-            <rect
-              key={layer.id}
-              x={layer.x}
-              y={layer.y}
-              width={layerWidth}
-              height={layerHeight}
-              rx={radius}
-              ry={radius}
-              fill={fill}
-              stroke={stroke}
-              strokeWidth={strokeWidth}
-              opacity={opacity}
-            />
+            customRadii ? (
+              <path
+                key={layer.id}
+                d={roundedRectPath(layer.x, layer.y, layerWidth, layerHeight, customRadii)}
+                fill={fill}
+                stroke={stroke}
+                strokeWidth={strokeWidth}
+                opacity={opacity}
+              />
+            ) : (
+              <rect
+                key={layer.id}
+                x={layer.x}
+                y={layer.y}
+                width={layerWidth}
+                height={layerHeight}
+                rx={radius}
+                ry={radius}
+                fill={fill}
+                stroke={stroke}
+                strokeWidth={strokeWidth}
+                opacity={opacity}
+              />
+            )
           );
         }
 
@@ -1874,6 +2140,11 @@ type ShapeLayerNodeProps = {
   onDragStart: (event: Konva.KonvaEventObject<DragEvent>) => void;
   onDragMove: (event: Konva.KonvaEventObject<DragEvent>) => void;
   onDragEnd: (event: Konva.KonvaEventObject<DragEvent>) => void;
+  onDblClick: (event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
+  isEditingImageCrop: boolean;
+  onImageCropDragStart: (event: Konva.KonvaEventObject<DragEvent>) => void;
+  onImageCropDragMove: (event: Konva.KonvaEventObject<DragEvent>) => void;
+  onImageCropDragEnd: (event: Konva.KonvaEventObject<DragEvent>) => void;
   onTransform: (event: Konva.KonvaEventObject<Event>) => void;
   onTransformEnd: (event: Konva.KonvaEventObject<Event>) => void;
   setNode: (node: Konva.Node | null) => void;
@@ -1886,6 +2157,11 @@ function ShapeLayerNode({
   onDragStart,
   onDragMove,
   onDragEnd,
+  onDblClick,
+  isEditingImageCrop,
+  onImageCropDragStart,
+  onImageCropDragMove,
+  onImageCropDragEnd,
   onTransform,
   onTransformEnd,
   setNode
@@ -1897,23 +2173,25 @@ function ShapeLayerNode({
   const width = layer.width;
   const height = layer.height || layer.width;
   const renderedImage = image || framePlaceholderImage;
-  const crop = getCoverCrop(renderedImage, width, height);
-  const cornerRadius =
-    layer.shapeVariant === "circle"
-      ? Math.min(width, height) / 2
-      : layer.cornerRadius || 0;
+  const crop =
+    renderedImage && layer.imageUsage !== "standalone"
+      ? getCoverCrop(renderedImage, width, height, layer.imageCropFocusX, layer.imageCropFocusY)
+      : undefined;
+  const cornerRadius = getShapeCornerRadius(layer, width, height);
   const commonProps = {
     x: layer.x,
     y: layer.y,
     width,
     height,
-    draggable: canDrag,
+    draggable: isEditingImageCrop ? Boolean(layer.imageDataUrl) : canDrag,
     opacity: layer.opacity ?? 1,
     onMouseDown: onSelect,
     onTap: onSelect,
-    onDragStart,
-    onDragMove,
-    onDragEnd,
+    onDblClick,
+    onDblTap: onDblClick,
+    onDragStart: isEditingImageCrop ? onImageCropDragStart : onDragStart,
+    onDragMove: isEditingImageCrop ? onImageCropDragMove : onDragMove,
+    onDragEnd: isEditingImageCrop ? onImageCropDragEnd : onDragEnd,
     onTransform,
     onTransformEnd
   };
@@ -1999,6 +2277,7 @@ export default function App() {
   const [datasetSearch, setDatasetSearch] = useState("");
   const [datasetLibraryError, setDatasetLibraryError] = useState("");
   const [selectedTemplateIds, setSelectedTemplateIds] = useState<string[]>([]);
+  const [pendingProjectImageDeleteIds, setPendingProjectImageDeleteIds] = useState<string[]>([]);
   const [selectedTemplateFolderId, setSelectedTemplateFolderId] = useState(DEFAULT_TEMPLATE_FOLDER_ID);
   const [selectedPickerFolderId, setSelectedPickerFolderId] = useState(DEFAULT_TEMPLATE_FOLDER_ID);
   const [selectedImageFolderId, setSelectedImageFolderId] = useState(DEFAULT_TEMPLATE_FOLDER_ID);
@@ -2022,6 +2301,8 @@ export default function App() {
   const [projectFolderDetailTab, setProjectFolderDetailTab] = useState<ProjectFolderDetailTab>("designs");
   const [projectSortOrder, setProjectSortOrder] = useState<ProjectSortOrder>("newest");
   const [projectViewMode, setProjectViewMode] = useState<ProjectViewMode>("grid");
+  const [imageSearch, setImageSearch] = useState("");
+  const [imageSortOrder, setImageSortOrder] = useState<ProjectSortOrder>("newest");
   const [isFoldersCollapsed, setIsFoldersCollapsed] = useState(false);
   const [isDesignsCollapsed, setIsDesignsCollapsed] = useState(false);
   const [pendingDesignFolderId, setPendingDesignFolderId] = useState<string | null>(null);
@@ -2041,6 +2322,7 @@ export default function App() {
   const [downloadToast, setDownloadToast] = useState("");
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [showPageSizeMenu, setShowPageSizeMenu] = useState(false);
+  const [showCornerRadiusPopover, setShowCornerRadiusPopover] = useState(false);
   const [pageSizeDraft, setPageSizeDraft] = useState({ name: "", width: "", height: "" });
   const [cloudSync, setCloudSync] = useState<CloudSyncState>({
     status: "loading",
@@ -2057,6 +2339,12 @@ export default function App() {
   const [showProjectAccountMenu, setShowProjectAccountMenu] = useState(false);
   const [isCanvasPanning, setIsCanvasPanning] = useState(false);
   const [inlineTextEditor, setInlineTextEditor] = useState<InlineTextEditor | null>(null);
+  const [imageCropEditLayerId, setImageCropEditLayerId] = useState<string | null>(null);
+  const [imageCropPreviewFocus, setImageCropPreviewFocus] = useState<{
+    layerId: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const [selectionBox, setSelectionBox] = useState({
     visible: false,
     x: 0,
@@ -2080,6 +2368,8 @@ export default function App() {
   const shapeHeightInputRef = useRef<HTMLInputElement>(null);
   const shapeRadiusInputRef = useRef<HTMLInputElement>(null);
   const layerRefs = useRef<Record<string, Konva.Node>>({});
+  const imageCropGuideRectRef = useRef<Konva.Rect | null>(null);
+  const imageCropGuideHandleRefs = useRef<Array<Konva.Circle | null>>([]);
   const selectionStartRef = useRef<{ x: number; y: number } | null>(null);
   const isSelectingRef = useRef(false);
   const isZoomShortcutPressedRef = useRef(false);
@@ -2112,6 +2402,15 @@ export default function App() {
     startY: number;
     positions: Record<string, { x: number; y: number }>;
   } | null>(null);
+  const imageCropDragRef = useRef<{
+    layerId: string;
+    startPointer: { x: number; y: number };
+    startFocusX: number;
+    startFocusY: number;
+    nextFocusX: number;
+    nextFocusY: number;
+    lockedAbsolutePosition: { x: number; y: number };
+  } | null>(null);
 
   function setAppState(updater: AppStateUpdater) {
     setAppStateBase((current) => {
@@ -2123,6 +2422,7 @@ export default function App() {
         undoStackRef.current.shift();
       }
       redoStackRef.current = [];
+      appStateRef.current = nextState;
       return nextState;
     });
     setHistoryVersion((current) => current + 1);
@@ -2133,6 +2433,7 @@ export default function App() {
     if (!previousState) return;
     setAppStateBase((current) => {
       redoStackRef.current.push(current);
+      appStateRef.current = previousState;
       return previousState;
     });
     setInlineTextEditor(null);
@@ -2148,6 +2449,7 @@ export default function App() {
       if (undoStackRef.current.length > HISTORY_LIMIT) {
         undoStackRef.current.shift();
       }
+      appStateRef.current = nextState;
       return nextState;
     });
     setInlineTextEditor(null);
@@ -2230,6 +2532,13 @@ export default function App() {
   )
     ? selectedImageFolderId
     : fallbackTemplateFolderId;
+  const currentTemplateFolderId = appState.templateFolders.some((folder) => folder.id === template.folderId)
+    ? template.folderId
+    : fallbackTemplateFolderId;
+  const currentTemplateFolder =
+    appState.templateFolders.find((folder) => folder.id === currentTemplateFolderId) ||
+    appState.templateFolders[0];
+  const imagePanelFolderId = isAdminPath ? currentTemplateFolderId : activeImageFolderId;
   const isAllProjectsView = activeTemplateFolderId === fallbackTemplateFolderId;
   const selectedTemplateFolder =
     appState.templateFolders.find((folder) => folder.id === activeTemplateFolderId) ||
@@ -2243,7 +2552,8 @@ export default function App() {
       (isAllProjectsView || item.folderId === activeTemplateFolderId) &&
       getTemplateLibraryImage(item)
   );
-  const designsInSelectedFolder = appState.templates.filter(
+  const visibleTemplates = removeDefaultPlaceholderTemplates(appState.templates);
+  const designsInSelectedFolder = visibleTemplates.filter(
     (item) => isAllProjectsView || item.folderId === activeTemplateFolderId
   );
   const activeProjectFolder = projectFolderId
@@ -2255,11 +2565,13 @@ export default function App() {
   const visibleManagementFolders = projectFolderChildren;
   const projectSearchKeyword = normalizeText(projectSearch);
   const managementItems = useMemo(() => {
-    const designs = appState.templates.map((item) => ({
+    const folderNameById = new Map(appState.templateFolders.map((folder) => [folder.id, folder.name]));
+    const designs = visibleTemplates.map((item) => ({
       id: item.id,
       kind: "design" as const,
       name: item.name,
       folderId: item.folderId,
+      folderName: folderNameById.get(item.folderId) || "Dự án",
       width: item.width,
       height: item.height,
       image: getTemplateLibraryImage(item),
@@ -2271,6 +2583,7 @@ export default function App() {
       kind: "template" as const,
       name: item.name,
       folderId: item.folderId,
+      folderName: folderNameById.get(item.folderId) || "Dự án",
       width: item.width,
       height: item.height,
       image: getTemplateLibraryImage(item),
@@ -2283,9 +2596,9 @@ export default function App() {
         return projectSortOrder === "newest" ? rightTime - leftTime : leftTime - rightTime;
       }
     );
-  }, [appState.templateImages, appState.templates, projectSortOrder]);
+  }, [appState.templateFolders, appState.templateImages, visibleTemplates, projectSortOrder]);
   const activeProjectFolderDesignCount = activeProjectFolder
-    ? appState.templates.filter((item) => item.folderId === activeProjectFolder.id).length
+    ? visibleTemplates.filter((item) => item.folderId === activeProjectFolder.id).length
     : 0;
   const activeProjectFolderImageCount = activeProjectFolder
     ? appState.templateImages.filter((item) => item.folderId === activeProjectFolder.id).length
@@ -2299,19 +2612,18 @@ export default function App() {
       return false;
     }
     if (!projectSearchKeyword) return true;
-    const folderName =
-      appState.templateFolders.find((folder) => folder.id === item.folderId)?.name || "";
-    return normalizeText(`${item.name} ${folderName}`).includes(projectSearchKeyword);
+    return normalizeText(item.name).includes(projectSearchKeyword);
   });
-  const visibleProjectFolders = projectSearchKeyword
-    ? visibleManagementFolders.filter((folder) =>
-        normalizeText(folder.name).includes(projectSearchKeyword)
-      )
-    : visibleManagementFolders;
+  const visibleProjectFolders =
+    projectSearchKeyword && !activeProjectFolder
+      ? visibleManagementFolders.filter((folder) =>
+          normalizeText(folder.name).includes(projectSearchKeyword)
+        )
+      : visibleManagementFolders;
   const isProjectHomeView = !activeProjectFolder && projectListingMode === "home";
   const isAdminProjectRootHome = isAdmin && projectRouteAdmin && isProjectHomeView;
   const showProjectFoldersSection = activeProjectFolder
-    ? Boolean(visibleProjectFolders.length || projectSearchKeyword)
+    ? Boolean(visibleProjectFolders.length)
     : projectListingMode !== "designs";
   const showProjectDesignsSection = projectListingMode !== "folders" && !isAdminProjectRootHome;
   const projectFolderPreviewLimit = getTwoRowPreviewLimit(
@@ -2355,10 +2667,24 @@ export default function App() {
   const showProjectViewToggle = Boolean(activeProjectFolder) || projectListingMode === "designs";
   const projectDesignListClass =
     showProjectViewToggle && projectViewMode === "list" ? "project-design-list" : "project-design-grid";
+  const canSelectProjectImages = Boolean(
+    isAdmin && projectRouteAdmin && showTemplateLibraryModal && activeProjectFolder && projectFolderDetailTab === "images"
+  );
+  const activeProjectImageIdSet = new Set(
+    activeProjectFolder
+      ? appState.templateImages
+          .filter((item) => item.folderId === activeProjectFolder.id)
+          .map((item) => item.id)
+      : []
+  );
+  const selectedProjectImageIds = canSelectProjectImages
+    ? selectedTemplateIds.filter((id) => activeProjectImageIdSet.has(id))
+    : [];
+  const selectedProjectImageCount = selectedProjectImageIds.length;
   const projectPageTitle = activeProjectFolder
     ? activeProjectFolder.name
     : projectListingMode === "folders"
-      ? "Tất cả thư mục"
+      ? "Tất cả dự án"
       : projectListingMode === "designs"
         ? "Tất cả thiết kế"
         : "Tất cả dự án";
@@ -2366,6 +2692,10 @@ export default function App() {
   useEffect(() => {
     setProjectDesignPage(1);
   }, [projectFolderId, projectSearch, projectSortOrder, projectFolderDetailTab]);
+
+  useEffect(() => {
+    setSelectedTemplateIds([]);
+  }, [projectFolderId, projectFolderDetailTab]);
 
   useEffect(() => {
     setProjectFolderDetailTab("designs");
@@ -2384,11 +2714,19 @@ export default function App() {
   }, [appState.templates, fallbackTemplateFolderId]);
 
   const templatesInPickerFolder = appState.templateImages.filter(
-    (item) => item.folderId === activePickerFolderId && getTemplateLibraryImage(item)
+    (item) => item.folderId === currentTemplateFolderId && getTemplateLibraryImage(item)
   );
   const imagesInActiveFolder = appState.templateImages.filter(
-    (item) => item.folderId === activeImageFolderId && getTemplateLibraryImage(item)
+    (item) => item.folderId === imagePanelFolderId && getTemplateLibraryImage(item)
   );
+  const imageSearchKeyword = normalizeText(imageSearch);
+  const visiblePanelImages = imagesInActiveFolder
+    .filter((item) => !imageSearchKeyword || normalizeText(item.name).includes(imageSearchKeyword))
+    .sort((left, right) => {
+      const leftTime = new Date(left.createdAt).getTime();
+      const rightTime = new Date(right.createdAt).getTime();
+      return imageSortOrder === "newest" ? rightTime - leftTime : leftTime - rightTime;
+    });
   const selectedPickerTemplate = selectedPickerTemplateId
     ? appState.templateImages.find((item) => item.id === selectedPickerTemplateId) || null
     : null;
@@ -2406,11 +2744,51 @@ export default function App() {
   const selectionHasShape = selectedLayers.some((layer) => isShapeLayer(layer));
   const selectedShapeWidth = Math.round(selectedLayer?.width ?? 0);
   const selectedShapeHeight = Math.round(selectedLayer?.height ?? selectedLayer?.width ?? 0);
+  const selectedShapeCornerRadii = selectedLayerIsShape && selectedLayer
+    ? getLayerCornerRadii(selectedLayer)
+    : cornerRadiiFromUniform(0);
+  const selectedShapeCornersAreUniform = areCornerRadiiUniform(selectedShapeCornerRadii);
   const selectedShapeRadius = Math.round(
     selectedLayer?.shapeVariant === "circle"
       ? Math.min(selectedShapeWidth, selectedShapeHeight) / 2
-      : selectedLayer?.cornerRadius || 0
+      : getCornerRadiusPreviewValue(selectedLayer || FALLBACK_TEXT_LAYER)
   );
+  const imageCropEditLayer = imageCropEditLayerId
+    ? template.layers.find((layer) => layer.id === imageCropEditLayerId) || null
+    : null;
+  const imageCropGuideRect =
+    imageCropEditLayer &&
+    isShapeLayer(imageCropEditLayer) &&
+    imageCropEditLayer.imageDataUrl &&
+    !isStandaloneImageLayer(imageCropEditLayer) &&
+    imageCropEditLayer.imageOriginalWidth &&
+    imageCropEditLayer.imageOriginalHeight
+      ? (() => {
+          const previewFocus =
+            imageCropPreviewFocus?.layerId === imageCropEditLayer.id ? imageCropPreviewFocus : null;
+          const rect = getCoverImageContentRect(
+            {
+              width: imageCropEditLayer.imageOriginalWidth,
+              height: imageCropEditLayer.imageOriginalHeight
+            },
+            imageCropEditLayer.width,
+            imageCropEditLayer.height || imageCropEditLayer.width,
+            previewFocus?.x ?? imageCropEditLayer.imageCropFocusX,
+            previewFocus?.y ?? imageCropEditLayer.imageCropFocusY
+          );
+          return rect
+            ? {
+                x: imageCropEditLayer.x + rect.x,
+                y: imageCropEditLayer.y + rect.y,
+                width: rect.width,
+                height: rect.height
+              }
+            : null;
+        })()
+      : null;
+  useEffect(() => {
+    setShowCornerRadiusPopover(false);
+  }, [selectedLayer?.id, hasMultiSelection]);
   const selectedFontStyleOptions = useMemo(() => {
     const baseOptions = [
       ["100", "Thin 100"],
@@ -2418,10 +2796,7 @@ export default function App() {
       ["300", "Light 300"],
       ["400", "Regular 400"],
       ["500", "Medium 500"],
-      ["600", "Semi Bold 600"],
-      ["700", "Bold 700"],
-      ["800", "Extra Bold 800"],
-      ["900", "Black 900"]
+      ["600", "Semi Bold 600"]
     ].map(([weight, label]) => ({
       value: `${weight}|normal`,
       label
@@ -2430,8 +2805,8 @@ export default function App() {
     const customOptions = appState.customFonts
       .filter((font) => font.family === selectedLayer.fontFamily)
       .map((font) => ({
-        value: `${font.fontWeight || "400"}|${font.fontStyle || "normal"}`,
-        label: font.styleName || `${font.fontWeight || "400"}${font.fontStyle === "italic" ? " Italic" : ""}`
+        value: `${clampFontWeight(font.fontWeight)}|${font.fontStyle || "normal"}`,
+        label: font.styleName || `${clampFontWeight(font.fontWeight)}${font.fontStyle === "italic" ? " Italic" : ""}`
       }));
     const uniqueOptions = Array.from(
       new Map(customOptions.map((option) => [option.value, option])).values()
@@ -2460,7 +2835,11 @@ export default function App() {
   const canEditWorkspace = true;
   const isAdminWorkspace = isAdmin && isAdminPath;
   const isAdminProjectManager = isAdmin && projectRouteAdmin && showTemplateLibraryModal;
-  const canAddTextLayer = canEditWorkspace && isAdminWorkspace;
+  const canAddFreeTextLayer = canEditWorkspace;
+  const canAddDataTextLayer = canEditWorkspace && isAdminWorkspace;
+  const pendingTemplateUploadSaveCount = pendingTemplateUploads.filter(
+    (upload) => upload.status !== "saved"
+  ).length;
   const uploadedFontGroups = useMemo(() => {
     const groups = new Map<
       string,
@@ -2641,6 +3020,8 @@ export default function App() {
 
     return () => window.clearTimeout(saveTimer);
   }, [
+    appState.templates,
+    appState.activeTemplateId,
     appState.templateFolders,
     appState.templateImages,
     appState.datasets,
@@ -2804,12 +3185,17 @@ export default function App() {
   useEffect(() => {
     const transformer = transformerRef.current;
     if (!transformer) return;
+    if (imageCropEditLayerId) {
+      transformer.nodes([]);
+      transformer.getLayer()?.batchDraw();
+      return;
+    }
     const nodes = selectedLayerIds
       .map((id) => layerRefs.current[id])
       .filter(Boolean);
     transformer.nodes(nodes);
     transformer.getLayer()?.batchDraw();
-  }, [selectedLayerIds, template.layers]);
+  }, [imageCropEditLayerId, selectedLayerIds, template.layers]);
 
   useEffect(() => {
     if (!inlineTextEditor) return;
@@ -2917,6 +3303,19 @@ export default function App() {
       if (isEditableTarget(event.target)) return;
       const isControlShortcut = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
+      if (event.key === "Escape" && imageCropDragRef.current) {
+        event.preventDefault();
+        imageCropDragRef.current = null;
+        setImageCropPreviewFocus(null);
+        setImageCropEditLayerId(null);
+        return;
+      }
+      if (event.key === "Escape" && imageCropEditLayerId) {
+        event.preventDefault();
+        setImageCropPreviewFocus(null);
+        setImageCropEditLayerId(null);
+        return;
+      }
       if (isControlShortcut && key === "z") {
         event.preventDefault();
         undoLastChange();
@@ -2939,7 +3338,6 @@ export default function App() {
       };
       const shortcutTool = toolShortcuts[event.key.toLowerCase()];
       if (shortcutTool) {
-        if (shortcutTool === "text" && !isAdminRef.current) return;
         event.preventDefault();
         setActiveCanvasTool(shortcutTool);
         return;
@@ -3021,7 +3419,7 @@ export default function App() {
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", resetShortcut);
     };
-  }, []);
+  }, [imageCropEditLayerId]);
 
   function updateTemplate(updater: (template: Template) => Template) {
     setAppState((current) => ({
@@ -3039,6 +3437,67 @@ export default function App() {
       updatedAt: new Date().toISOString(),
       layers: current.layers.map((layer) =>
         selectedLayerIds.includes(layer.id) ? { ...layer, ...patch } : layer
+      )
+    }));
+  }
+
+  function updateSelectedCornerRadiusForAll(nextValue: number) {
+    if (!canEditWorkspace || !selectedLayerIsShape || selectedLayer?.shapeVariant === "circle") return;
+    const radius = clampCornerRadius(nextValue);
+    updateSelectedLayer({
+      cornerRadius: radius,
+      cornerRadii: cornerRadiiFromUniform(radius)
+    });
+  }
+
+  function updateSelectedCornerRadiusCorner(key: CornerRadiusKey, nextValue: number) {
+    if (!canEditWorkspace || !selectedLayer || !selectedLayerIsShape || selectedLayer.shapeVariant === "circle") return;
+    const nextRadii = {
+      ...getLayerCornerRadii(selectedLayer),
+      [key]: clampCornerRadius(nextValue)
+    };
+    updateSelectedLayer({
+      cornerRadius: areCornerRadiiUniform(nextRadii) ? nextRadii.topLeft : selectedLayer.cornerRadius || 0,
+      cornerRadii: nextRadii
+    });
+  }
+
+  async function resetSelectedImageToOriginalSize() {
+    if (!canEditWorkspace || !selectedLayer || !isStandaloneImageLayer(selectedLayer) || !selectedLayer.imageDataUrl) {
+      return;
+    }
+
+    const layerId = selectedLayer.id;
+    let originalWidth = normalizeOptionalPositiveNumber(selectedLayer.imageOriginalWidth);
+    let originalHeight = normalizeOptionalPositiveNumber(selectedLayer.imageOriginalHeight);
+
+    if (!originalWidth || !originalHeight) {
+      try {
+        const image = await loadHtmlImage(selectedLayer.imageDataUrl);
+        originalWidth = normalizeOptionalPositiveNumber(image.naturalWidth || image.width);
+        originalHeight = normalizeOptionalPositiveNumber(image.naturalHeight || image.height);
+      } catch {
+        return;
+      }
+    }
+
+    if (!originalWidth || !originalHeight) return;
+    const resetWidth = Math.round(originalWidth);
+    const resetHeight = Math.round(originalHeight);
+
+    updateTemplate((current) => ({
+      ...current,
+      updatedAt: new Date().toISOString(),
+      layers: current.layers.map((layer) =>
+        layer.id === layerId
+          ? {
+              ...layer,
+              width: resetWidth,
+              height: resetHeight,
+              imageOriginalWidth: resetWidth,
+              imageOriginalHeight: resetHeight
+            }
+          : layer
       )
     }));
   }
@@ -3480,7 +3939,7 @@ export default function App() {
   }
 
   function addTextLayer(column: string, x = 120, y = 120) {
-    if (!column || !canAddTextLayer) return;
+    if (!column || !canAddDataTextLayer) return;
     const layer: TextLayer = {
       id: uid("layer"),
       name: column,
@@ -3490,7 +3949,7 @@ export default function App() {
       width: Math.max(80, Math.min(420, template.width - x - 32)),
       fontFamily: availableFonts[0],
       fontSize: DEFAULT_ADDED_TEXT_FONT_SIZE,
-      fontWeight: "700",
+      fontWeight: "600",
       color: "#071025",
       align: "left",
       lineHeight: 1.16,
@@ -3506,7 +3965,7 @@ export default function App() {
   }
 
   function addFreeTextLayer(x = 120, y = 120, content = "Text", fontSize = DEFAULT_ADDED_TEXT_FONT_SIZE) {
-    if (!canAddTextLayer) return;
+    if (!canAddFreeTextLayer) return;
     const layer: TextLayer = {
       id: uid("layer"),
       name: content.trim() || "Free text",
@@ -3518,7 +3977,7 @@ export default function App() {
       width: Math.max(80, Math.min(420, template.width - x - 32)),
       fontFamily: availableFonts[0],
       fontSize,
-      fontWeight: "700",
+      fontWeight: "600",
       color: "#071025",
       align: "left",
       lineHeight: 1.16,
@@ -3556,12 +4015,12 @@ export default function App() {
       height: size,
       fontFamily: availableFonts[0],
       fontSize: DEFAULT_ADDED_TEXT_FONT_SIZE,
-      fontWeight: "700",
+      fontWeight: "600",
       color: "#071025",
       fill: shapeVariant === "frame" ? "#eef7ff" : "#8b3dff",
       stroke: shapeVariant === "frame" ? "#8b3dff" : "#6d28d9",
       strokeWidth: 0,
-      cornerRadius: shapeVariant === "circle" ? size / 2 : shapeVariant === "frame" ? 28 : 0,
+      cornerRadius: shapeVariant === "circle" ? size / 2 : 0,
       opacity: 1,
       align: "left",
       lineHeight: 1.16,
@@ -3591,6 +4050,13 @@ export default function App() {
         : null) || (useSelectedFrame ? selectedLayers.find((layer) => isShapeLayer(layer)) : null);
     if (targetFrame) {
       const targetIsStandaloneImage = isStandaloneImageLayer(targetFrame);
+      const standaloneSize = targetIsStandaloneImage
+        ? getContainedImageSize(
+            image,
+            Math.max(24, targetFrame.width),
+            Math.max(24, targetFrame.height || targetFrame.width)
+          )
+        : null;
       updateTemplate((current) => ({
         ...current,
         updatedAt: new Date().toISOString(),
@@ -3602,11 +4068,16 @@ export default function App() {
                 shapeVariant: targetIsStandaloneImage ? "image" : layer.shapeVariant || "frame",
                 imageDataUrl: dataUrl,
                 imageName: image.name,
+                imageOriginalWidth: image.width,
+                imageOriginalHeight: image.height,
+                imageCropFocusX: 0.5,
+                imageCropFocusY: 0.5,
                 imageUsage: targetIsStandaloneImage ? "standalone" : "frame-fill",
+                ...(standaloneSize ? standaloneSize : {}),
                 fill: targetIsStandaloneImage ? "#ffffff" : layer.fill || "#eef7ff",
                 stroke: layer.stroke || "#8b3dff",
                 strokeWidth: layer.strokeWidth ?? 0,
-                cornerRadius: layer.cornerRadius ?? 28
+                cornerRadius: layer.cornerRadius ?? 0
               }
             : layer
         )
@@ -3616,8 +4087,13 @@ export default function App() {
       return;
     }
 
-    const width = Math.min(360, Math.max(220, Math.round(template.width * 0.32)));
-    const height = Math.round(width * 0.75);
+    const size = getContainedImageSize(
+      image,
+      Math.min(420, Math.max(180, Math.round(template.width * 0.32))),
+      Math.min(420, Math.max(180, Math.round(template.height * 0.32)))
+    );
+    const width = size.width;
+    const height = size.height;
     const x = Math.max(
       0,
       Math.round(dropPoint ? dropPoint.x - width / 2 : (template.width - width) / 2)
@@ -3638,15 +4114,17 @@ export default function App() {
       height,
       fontFamily: availableFonts[0],
       fontSize: DEFAULT_ADDED_TEXT_FONT_SIZE,
-      fontWeight: "700",
+      fontWeight: "600",
       color: "#071025",
       fill: "#ffffff",
       stroke: "#8b3dff",
       strokeWidth: 0,
-      cornerRadius: 28,
+      cornerRadius: 0,
       opacity: 1,
       imageDataUrl: dataUrl,
       imageName: image.name,
+      imageOriginalWidth: image.width,
+      imageOriginalHeight: image.height,
       imageUsage: "standalone",
       align: "left",
       lineHeight: 1.16,
@@ -3660,6 +4138,34 @@ export default function App() {
     }));
     setSelectedLayerIds([layer.id]);
     setActiveCanvasTool("move");
+  }
+
+  function setTemplateImageDragPreview(event: React.DragEvent<HTMLElement>, image: TemplateImage) {
+    if (typeof document === "undefined") return;
+    const dataUrl = getTemplateLibraryImage(image);
+    if (!dataUrl) return;
+    const previewSize = getContainedImageSize(image, 180, 120);
+    const preview = document.createElement("div");
+    preview.style.position = "fixed";
+    preview.style.left = "-1000px";
+    preview.style.top = "-1000px";
+    preview.style.width = `${previewSize.width}px`;
+    preview.style.height = `${previewSize.height}px`;
+    preview.style.pointerEvents = "none";
+    preview.style.background = "transparent";
+
+    const previewImage = document.createElement("img");
+    previewImage.src = dataUrl;
+    previewImage.alt = "";
+    previewImage.draggable = false;
+    previewImage.style.width = "100%";
+    previewImage.style.height = "100%";
+    previewImage.style.objectFit = "contain";
+    previewImage.style.display = "block";
+    preview.appendChild(previewImage);
+    document.body.appendChild(preview);
+    event.dataTransfer.setDragImage(preview, previewSize.width / 2, previewSize.height / 2);
+    window.setTimeout(() => preview.remove(), 0);
   }
 
   function removeSelectedLayer() {
@@ -3761,20 +4267,18 @@ export default function App() {
     event.preventDefault();
     setAdminSettingsError("");
     setAdminSettingsMessage("");
-    const nextAccount = adminSettingsName.trim();
-    if (!nextAccount) {
-      setAdminSettingsError("Vui lòng nhập tên tài khoản");
+    const currentAccount = getStoredAdminAccount();
+    if (!adminNewPassword || !adminConfirmPassword) {
+      setAdminSettingsError("Vui lòng nhập mật khẩu mới và xác nhận mật khẩu");
       return;
     }
-    if (adminNewPassword || adminConfirmPassword) {
-      if (adminNewPassword.length < 4) {
-        setAdminSettingsError("Mật khẩu mới cần ít nhất 4 ký tự");
-        return;
-      }
-      if (adminNewPassword !== adminConfirmPassword) {
-        setAdminSettingsError("Xác nhận mật khẩu chưa khớp");
-        return;
-      }
+    if (adminNewPassword.length < 4) {
+      setAdminSettingsError("Mật khẩu mới cần ít nhất 4 ký tự");
+      return;
+    }
+    if (adminNewPassword !== adminConfirmPassword) {
+      setAdminSettingsError("Xác nhận mật khẩu chưa khớp");
+      return;
     }
     if (remoteSyncEnabledRef.current) {
       try {
@@ -3783,7 +4287,7 @@ export default function App() {
           credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            account: nextAccount,
+            account: currentAccount,
             password: adminNewPassword.trim()
           })
         });
@@ -3791,16 +4295,10 @@ export default function App() {
         if (!response.ok) {
           throw new Error(errorMessageFromApi(data, "Khong luu duoc tai khoan admin"));
         }
-        localStorage.setItem(ADMIN_ACCOUNT_KEY, nextAccount);
-        if (adminNewPassword) {
-          localStorage.setItem(ADMIN_PASSWORD_HASH_KEY, await sha256(adminNewPassword.trim()));
-        }
+        localStorage.setItem(ADMIN_PASSWORD_HASH_KEY, await sha256(adminNewPassword.trim()));
         setAdminNewPassword("");
         setAdminConfirmPassword("");
-        setAdminAccount(nextAccount);
-        setAdminLoginName(nextAccount);
-        setAdminSettingsName(nextAccount);
-        setAdminSettingsMessage("Da luu thong tin quan tri tren cloud");
+        setAdminSettingsMessage("Đã đổi mật khẩu quản trị");
         return;
       } catch (error) {
         setAdminSettingsError(
@@ -3809,16 +4307,10 @@ export default function App() {
         return;
       }
     }
-    if (adminNewPassword) {
-      localStorage.setItem(ADMIN_PASSWORD_HASH_KEY, await sha256(adminNewPassword.trim()));
-      setAdminNewPassword("");
-      setAdminConfirmPassword("");
-    }
-    localStorage.setItem(ADMIN_ACCOUNT_KEY, nextAccount);
-    setAdminAccount(nextAccount);
-    setAdminLoginName(nextAccount);
-    setAdminSettingsName(nextAccount);
-    setAdminSettingsMessage("Đã lưu thông tin quản trị");
+    localStorage.setItem(ADMIN_PASSWORD_HASH_KEY, await sha256(adminNewPassword.trim()));
+    setAdminNewPassword("");
+    setAdminConfirmPassword("");
+    setAdminSettingsMessage("Đã đổi mật khẩu quản trị");
   }
 
   function openTemplateLibraryModal() {
@@ -3923,13 +4415,13 @@ export default function App() {
     if (parentId) {
       const parentFolder = appState.templateFolders.find((folder) => folder.id === parentId);
       if (parentFolder?.parentId) {
-        setTemplateLibraryError("Chỉ được tạo subfolder trong folder gốc");
+        setTemplateLibraryError("Chỉ được tạo dự án con trong dự án gốc");
         return;
       }
     }
     const nextFolder: TemplateFolder = {
       id: uid("folder"),
-      name: "Thư mục mới",
+      name: "Dự án mới",
       parentId,
       createdAt: new Date().toISOString()
     };
@@ -3954,7 +4446,7 @@ export default function App() {
   }
 
   function finishRenameTemplateFolder(folderId: string, name: string) {
-    if (!name.trim()) renameTemplateFolder(folderId, "Thư mục chưa đặt tên");
+    if (!name.trim()) renameTemplateFolder(folderId, "Dự án chưa đặt tên");
     setEditingTemplateFolderId(null);
   }
 
@@ -3976,19 +4468,19 @@ export default function App() {
   function deleteTemplateFolder(folderId: string) {
     if (!isAdmin) return;
     if (appState.templateFolders.length <= 1) {
-      setTemplateLibraryError("Phải giữ lại ít nhất 1 folder");
+      setTemplateLibraryError("Phải giữ lại ít nhất 1 dự án");
       setOpenTemplateFolderMenuId(null);
       return;
     }
     const folderIdsToDelete = collectTemplateFolderIds(folderId);
     if (folderIdsToDelete.size >= appState.templateFolders.length) {
-      setTemplateLibraryError("Không thể xóa toàn bộ folder");
+      setTemplateLibraryError("Không thể xóa toàn bộ dự án");
       setOpenTemplateFolderMenuId(null);
       return;
     }
     const folderName =
-      appState.templateFolders.find((folder) => folder.id === folderId)?.name || "folder này";
-    if (!window.confirm(`Xóa "${folderName}" và toàn bộ folder con, ảnh bên trong?`)) {
+      appState.templateFolders.find((folder) => folder.id === folderId)?.name || "dự án này";
+    if (!window.confirm(`Xóa "${folderName}" và toàn bộ dự án con, ảnh bên trong?`)) {
       setOpenTemplateFolderMenuId(null);
       return;
     }
@@ -4019,8 +4511,9 @@ export default function App() {
   }
 
   function openTemplatePickerModal() {
+    if (!isAdminWorkspace) return;
     setShowTemplatePickerModal(true);
-    setSelectedPickerFolderId(activeTemplateFolderId);
+    setSelectedPickerFolderId(currentTemplateFolderId);
     setSelectedPickerTemplateId(null);
   }
 
@@ -4030,12 +4523,11 @@ export default function App() {
   }
 
   function applyTemplateImageToCurrentTemplate(templateId: string) {
+    if (!isAdminWorkspace) return;
     const sourceTemplate = appState.templateImages.find((item) => item.id === templateId);
     if (!sourceTemplate || !getTemplateLibraryImage(sourceTemplate)) return;
     updateTemplate((current) => ({
       ...current,
-      width: sourceTemplate.width,
-      height: sourceTemplate.height,
       backgroundDataUrl: getTemplateLibraryImage(sourceTemplate),
       updatedAt: new Date().toISOString()
     }));
@@ -4044,6 +4536,7 @@ export default function App() {
   }
 
   function removeCurrentTemplateImage() {
+    if (!isAdminWorkspace) return;
     if (!template.backgroundDataUrl) return;
     updateTemplate((current) => ({
       ...current,
@@ -4091,7 +4584,7 @@ export default function App() {
     const uploadsToSave = pendingTemplateUploads.filter((item) => item.status !== "saved");
     if (!uploadsToSave.length || !isAdmin) return;
     if (!selectedTemplateFolder) {
-      setTemplateLibraryError("Vui lòng tạo hoặc chọn folder trước khi tải ảnh");
+      setTemplateLibraryError("Vui lòng tạo hoặc chọn dự án trước khi tải ảnh");
       return;
     }
     const targetFolderId = activeTemplateFolderId;
@@ -4136,9 +4629,63 @@ export default function App() {
     }
     setIsUploadingAsset(false);
     const failedCount = uploadsToSave.length - savedImages.length;
-    setTemplateLibraryError(
-      failedCount ? `${failedCount} ảnh chưa tải lên được. Vui lòng thử lại.` : "Đã tải xong tất cả ảnh."
-    );
+    if (failedCount) {
+      setPendingTemplateUploads((current) => current.filter((item) => item.status !== "saved"));
+      setTemplateLibraryError(`${failedCount} ảnh chưa tải lên được. Vui lòng thử lại.`);
+    } else {
+      setPendingTemplateUploads([]);
+      setTemplateLibraryError("");
+    }
+  }
+
+  async function uploadImagesToCurrentTemplateFolder(files: Array<File | undefined | null>) {
+    if (!isAdminWorkspace || isUploadingAsset) return;
+    const imageFiles = files.filter((file): file is File => Boolean(file && file.type.startsWith("image/")));
+    if (!imageFiles.length) return;
+    const targetFolderId = currentTemplateFolderId;
+    setIsUploadingAsset(true);
+    setTemplateLibraryError("");
+
+    try {
+      const savedImages: TemplateImage[] = [];
+      for (const file of imageFiles) {
+        const dataUrl = await fileToDataUrl(file);
+        const image = await loadHtmlImage(dataUrl);
+        let assetUrl = dataUrl;
+        let width = image.naturalWidth || image.width;
+        let height = image.naturalHeight || image.height;
+
+        if (remoteSyncEnabledRef.current) {
+          const uploaded = await uploadAssetToCloudinary(file, "image");
+          assetUrl = uploaded.url;
+          width = uploaded.width || width;
+          height = uploaded.height || height;
+        }
+
+        savedImages.push({
+          id: uid("image"),
+          name: file.name.replace(/\.[^.]+$/, "") || "Ảnh mới",
+          folderId: targetFolderId,
+          width,
+          height,
+          dataUrl: assetUrl,
+          createdAt: new Date().toISOString()
+        });
+      }
+
+      if (savedImages.length) {
+        setAppState((current) => ({
+          ...current,
+          templateImages: [...savedImages.reverse(), ...current.templateImages]
+        }));
+        showDownloadToast(`Đã tải lên ${savedImages.length} ảnh`);
+      }
+    } catch (error) {
+      setTemplateLibraryError(error instanceof Error ? error.message : "Không tải ảnh lên được");
+      showDownloadToast("Không tải ảnh lên được");
+    } finally {
+      setIsUploadingAsset(false);
+    }
   }
 
   function prepareProjectFolderImages(files: File[]) {
@@ -4187,6 +4734,15 @@ export default function App() {
     if (image) setPreviewTemplate(image);
   }
 
+  function openProjectFolder(folderId: string, tab: ProjectFolderDetailTab = "designs") {
+    setBrowserPath(getProjectFolderPath(folderId, projectRouteAdmin));
+    setProjectFolderId(folderId);
+    setProjectListingMode("home");
+    setProjectFolderDetailTab(tab);
+    setProjectDesignPage(1);
+    setProjectSearch("");
+  }
+
   function createPageInFolder(folderId?: string, name?: string) {
     const currentState = appStateRef.current;
     const nextName = name?.trim() || getNextPageName(currentState.templates);
@@ -4194,8 +4750,8 @@ export default function App() {
       id: uid("template"),
       name: nextName,
       folderId: folderId || currentState.templateFolders[0]?.id || DEFAULT_TEMPLATE_FOLDER_ID,
-      width: 1080,
-      height: 1350,
+      width: DEFAULT_TEMPLATE_WIDTH,
+      height: DEFAULT_TEMPLATE_HEIGHT,
       backgroundDataUrl: "",
       layers: [],
       updatedAt: new Date().toISOString()
@@ -4312,6 +4868,7 @@ export default function App() {
   }
 
   function openPageSizeMenu() {
+    if (!isAdminWorkspace) return;
     setPageSizeDraft({
       name: template.name,
       width: String(template.width),
@@ -4322,6 +4879,7 @@ export default function App() {
   }
 
   function applyPageSizeDraft() {
+    if (!isAdminWorkspace) return;
     const width = Math.round(Number(pageSizeDraft.width));
     const height = Math.round(Number(pageSizeDraft.height));
     if (!Number.isFinite(width) || !Number.isFinite(height)) return;
@@ -4331,7 +4889,7 @@ export default function App() {
 
     updateTemplate((current) => ({
       ...current,
-      name: isAdminWorkspace ? nextName : current.name,
+      name: nextName,
       width: nextWidth,
       height: nextHeight,
       updatedAt: new Date().toISOString()
@@ -4364,6 +4922,8 @@ export default function App() {
 
   function deleteSelectedTemplates() {
     if (!selectedTemplateIds.length || !isAdmin) return;
+    const selectedCount = selectedTemplateIds.length;
+    if (!window.confirm(`Xóa ${selectedCount} ảnh đã chọn?`)) return;
     setAppState((current) => {
       return {
         ...current,
@@ -4373,6 +4933,23 @@ export default function App() {
       };
     });
     setSelectedTemplateIds([]);
+    setTemplateLibraryError("");
+  }
+
+  function deleteSelectedProjectImages() {
+    if (!selectedProjectImageIds.length || !isAdmin) return;
+    setPendingProjectImageDeleteIds(selectedProjectImageIds);
+  }
+
+  function confirmDeleteSelectedProjectImages() {
+    if (!pendingProjectImageDeleteIds.length || !isAdmin) return;
+    const idsToDelete = new Set(pendingProjectImageDeleteIds);
+    setAppState((current) => ({
+      ...current,
+      templateImages: current.templateImages.filter((item) => !idsToDelete.has(item.id))
+    }));
+    setSelectedTemplateIds((current) => current.filter((id) => !idsToDelete.has(id)));
+    setPendingProjectImageDeleteIds([]);
     setTemplateLibraryError("");
   }
 
@@ -4391,6 +4968,7 @@ export default function App() {
     setShowTemplateLibraryModal(false);
     setShowDatasetLibraryModal(false);
     setShowFontLibraryModal(true);
+    setShowSettingsMenu(false);
     setFontLibraryError("");
   }
 
@@ -4565,6 +5143,7 @@ export default function App() {
     setShowTemplateLibraryModal(false);
     setShowFontLibraryModal(false);
     setShowDatasetLibraryModal(true);
+    setShowSettingsMenu(false);
     setDatasetLibraryError("");
     setSelectedDatasetIds([]);
   }
@@ -4580,7 +5159,7 @@ export default function App() {
   }
 
   function openDataImportFromLibrary() {
-    setIsDataImportInline(true);
+    setIsDataImportInline(false);
     openDataImportModal();
   }
 
@@ -4773,12 +5352,39 @@ export default function App() {
     };
   }
 
+  function updateImageCropGuideNodes(rect: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }) {
+    const guideRect = imageCropGuideRectRef.current;
+    if (!guideRect) return;
+    guideRect.position({ x: rect.x, y: rect.y });
+    guideRect.size({ width: rect.width, height: rect.height });
+    const points = [
+      [rect.x, rect.y],
+      [rect.x + rect.width, rect.y],
+      [rect.x + rect.width, rect.y + rect.height],
+      [rect.x, rect.y + rect.height]
+    ];
+    points.forEach(([x, y], index) => {
+      imageCropGuideHandleRefs.current[index]?.position({ x, y });
+    });
+    guideRect.getLayer()?.batchDraw();
+  }
+
   function beginCanvasSelection(event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
     if (!canEditWorkspace) return;
     if ("button" in event.evt && event.evt.button === 1) return;
     const isStageOrBackground =
       event.target === event.target.getStage() || event.target.name() === "background";
     if (!isStageOrBackground) return;
+    if (imageCropEditLayerId) {
+      imageCropDragRef.current = null;
+      setImageCropPreviewFocus(null);
+      setImageCropEditLayerId(null);
+    }
     const pointer = getLogicalPointer();
     if (!pointer) return;
     if (activeCanvasTool === "text") {
@@ -4846,6 +5452,11 @@ export default function App() {
     event: Konva.KonvaEventObject<MouseEvent | TouchEvent>
   ) {
     if ("button" in event.evt && event.evt.button === 1) return;
+    if (imageCropEditLayerId && imageCropEditLayerId !== layerId) {
+      imageCropDragRef.current = null;
+      setImageCropPreviewFocus(null);
+      setImageCropEditLayerId(null);
+    }
     if (activeCanvasTool !== "move") {
       setActiveCanvasTool("move");
     }
@@ -4862,6 +5473,136 @@ export default function App() {
       return;
     }
     setSelectedLayerIds([layerId]);
+  }
+
+  function beginFrameImageCropEdit(
+    layerId: string,
+    event: Konva.KonvaEventObject<MouseEvent | TouchEvent>
+  ) {
+    const layer = template.layers.find((item) => item.id === layerId);
+    if (
+      !canEditWorkspace ||
+      !isShapeLayer(layer) ||
+      !layer.imageDataUrl ||
+      isStandaloneImageLayer(layer)
+    ) {
+      return;
+    }
+    event.cancelBubble = true;
+    setSelectedLayerIds([layerId]);
+    setActiveCanvasTool("move");
+    setImageCropPreviewFocus({
+      layerId,
+      x: clamp01(layer.imageCropFocusX),
+      y: clamp01(layer.imageCropFocusY)
+    });
+    setImageCropEditLayerId(layerId);
+  }
+
+  function handleImageCropDragStart(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
+    if (imageCropEditLayerId !== layerId) return;
+    const layer = template.layers.find((item) => item.id === layerId);
+    const pointer = getLogicalPointer();
+    if (!isShapeLayer(layer) || !pointer) return;
+    event.cancelBubble = true;
+    const lockedAbsolutePosition = event.target.absolutePosition();
+    event.target.dragBoundFunc(() => lockedAbsolutePosition);
+    imageCropDragRef.current = {
+      layerId,
+      startPointer: pointer,
+      startFocusX: clamp01(layer.imageCropFocusX),
+      startFocusY: clamp01(layer.imageCropFocusY),
+      nextFocusX: clamp01(layer.imageCropFocusX),
+      nextFocusY: clamp01(layer.imageCropFocusY),
+      lockedAbsolutePosition
+    };
+    setImageCropPreviewFocus({
+      layerId,
+      x: clamp01(layer.imageCropFocusX),
+      y: clamp01(layer.imageCropFocusY)
+    });
+    event.target.position({ x: layer.x, y: layer.y });
+  }
+
+  function handleImageCropDragMove(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
+    const drag = imageCropDragRef.current;
+    if (!drag || drag.layerId !== layerId) return;
+    const layer = template.layers.find((item) => item.id === layerId);
+    const pointer = getLogicalPointer();
+    const node = event.target as Konva.Image;
+    const image = node.image() as { width?: number; height?: number } | undefined;
+    if (!isShapeLayer(layer) || !pointer || !image?.width || !image?.height) return;
+    event.cancelBubble = true;
+    const width = Math.max(1, layer.width);
+    const height = Math.max(1, layer.height || layer.width);
+    const startCrop = getCoverCrop(
+      { width: image.width, height: image.height },
+      width,
+      height,
+      drag.startFocusX,
+      drag.startFocusY
+    );
+    if (!startCrop) return;
+    const maxCropX = Math.max(0, image.width - startCrop.width);
+    const maxCropY = Math.max(0, image.height - startCrop.height);
+    const deltaX = pointer.x - drag.startPointer.x;
+    const deltaY = pointer.y - drag.startPointer.y;
+    const nextFocusX =
+      maxCropX > 0
+        ? clamp01(drag.startFocusX - (deltaX * startCrop.width) / (width * maxCropX))
+        : 0.5;
+    const nextFocusY =
+      maxCropY > 0
+        ? clamp01(drag.startFocusY - (deltaY * startCrop.height) / (height * maxCropY))
+        : 0.5;
+    drag.nextFocusX = nextFocusX;
+    drag.nextFocusY = nextFocusY;
+    node.position({ x: layer.x, y: layer.y });
+    const imageSize = { width: image.width, height: image.height };
+    node.crop(getCoverCrop(imageSize, width, height, nextFocusX, nextFocusY));
+    const guideRect = getCoverImageContentRect(
+      imageSize,
+      width,
+      height,
+      nextFocusX,
+      nextFocusY
+    );
+    if (guideRect) {
+      updateImageCropGuideNodes({
+        x: layer.x + guideRect.x,
+        y: layer.y + guideRect.y,
+        width: guideRect.width,
+        height: guideRect.height
+      });
+    }
+    node.getLayer()?.batchDraw();
+  }
+
+  function handleImageCropDragEnd(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
+    const drag = imageCropDragRef.current;
+    const layer = template.layers.find((item) => item.id === layerId);
+    if (!drag || drag.layerId !== layerId || !isShapeLayer(layer)) return;
+    event.cancelBubble = true;
+    event.target.dragBoundFunc(null);
+    event.target.position({ x: layer.x, y: layer.y });
+    const nextFocusX = Number(drag.nextFocusX.toFixed(4));
+    const nextFocusY = Number(drag.nextFocusY.toFixed(4));
+    imageCropDragRef.current = null;
+    setImageCropPreviewFocus(null);
+    setImageCropEditLayerId(null);
+    updateTemplate((current) => ({
+      ...current,
+      updatedAt: new Date().toISOString(),
+      layers: current.layers.map((item) =>
+        item.id === layerId
+          ? {
+              ...item,
+              imageCropFocusX: nextFocusX,
+              imageCropFocusY: nextFocusY
+            }
+          : item
+      )
+    }));
   }
 
   function handleLayerDragStart(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
@@ -4950,16 +5691,20 @@ export default function App() {
     if (isShapeLayer(layer)) {
       node.height(Math.max(24, node.height() * node.scaleY()));
     }
-    if (node instanceof Konva.Image) {
+    if (node instanceof Konva.Image && !isStandaloneImageLayer(layer)) {
       const image = node.image() as { width?: number; height?: number } | undefined;
       if (image?.width && image?.height) {
         const nextCrop = getCoverCrop(
           { width: image.width, height: image.height },
           node.width(),
-          node.height()
+          node.height(),
+          layer?.imageCropFocusX,
+          layer?.imageCropFocusY
         );
         if (nextCrop) node.crop(nextCrop);
       }
+    } else if (node instanceof Konva.Image) {
+      node.crop(undefined);
     }
     node.scaleX(1);
     node.scaleY(1);
@@ -4991,7 +5736,7 @@ export default function App() {
         nextSize.height,
         layer.shapeVariant === "circle"
           ? Math.min(nextSize.width, nextSize.height) / 2
-          : layer.cornerRadius || 0
+          : getCornerRadiusPreviewValue(layer)
       );
     }
   }
@@ -5006,7 +5751,7 @@ export default function App() {
         nextSize.height,
         layer.shapeVariant === "circle"
           ? Math.min(nextSize.width, nextSize.height) / 2
-          : layer.cornerRadius || 0
+          : getCornerRadiusPreviewValue(layer)
       );
     }
     updateTemplate((current) => ({
@@ -5096,7 +5841,9 @@ export default function App() {
     if (!stage || isExporting) return false;
     setIsExporting(true);
     const transformer = transformerRef.current;
+    const cropGuideNodes = stage.find(".image-crop-guide");
     transformer?.visible(false);
+    cropGuideNodes.forEach((node) => node.visible(false));
     transformer?.getLayer()?.batchDraw();
     const currentScale = stage.scaleX();
     const currentWidth = stage.width();
@@ -5121,7 +5868,8 @@ export default function App() {
     } finally {
       stage.scale({ x: currentScale, y: currentScale });
       stage.size({ width: currentWidth, height: currentHeight });
-      transformer?.visible(Boolean(selectedLayerIds.length));
+      cropGuideNodes.forEach((node) => node.visible(true));
+      transformer?.visible(Boolean(selectedLayerIds.length) && !imageCropEditLayerId);
       transformer?.getLayer()?.batchDraw();
       setIsExporting(false);
     }
@@ -5148,13 +5896,68 @@ export default function App() {
     showDownloadToast(didDownload ? "Đã tải ảnh xuống" : "Không thể tải ảnh");
   }
 
-  function saveTemplateForClient() {
+  async function saveTemplateForClient() {
     if (!isAdminWorkspace) return;
     setShowDownloadMenu(false);
-    updateTemplate((current) => ({
-      ...current,
-      updatedAt: new Date().toISOString()
-    }));
+    const savedAt = new Date().toISOString();
+    const currentState = appStateRef.current;
+    const nextState: AppState = {
+      ...currentState,
+      templates: currentState.templates.map((item) =>
+        item.id === currentState.activeTemplateId
+          ? {
+              ...item,
+              updatedAt: savedAt
+            }
+          : item
+      )
+    };
+    skipNextRemoteSaveRef.current = true;
+    setAppState(nextState);
+
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(appStateForLocalBackup(nextState)));
+      setStorageWarning("");
+    } catch {
+      if (!remoteSyncEnabledRef.current) {
+        setStorageWarning(
+          "Không lưu được dữ liệu vào trình duyệt vì dung lượng ảnh quá lớn. Trang mới vẫn dùng được trong phiên hiện tại."
+        );
+      }
+    }
+
+    if (remoteSyncEnabledRef.current && remoteStateReadyRef.current) {
+      setCloudSync({
+        status: "saving",
+        message: "Đang lưu template..."
+      });
+      try {
+        const response = await fetch("/api/state", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ state: persistedLibraryState(nextState) })
+        });
+        const data = await readJsonResponse(response);
+        if (!response.ok) {
+          throw new Error(errorMessageFromApi(data, "Không lưu được template"));
+        }
+        setCloudSync({
+          status: "saved",
+          message: "Đã lưu template"
+        });
+        showDownloadToast("Đã lưu template để client sử dụng");
+        return;
+      } catch (error) {
+        setCloudSync({
+          status: "error",
+          message: error instanceof Error ? error.message : "Lỗi lưu template"
+        });
+        showDownloadToast("Không lưu được template lên cloud");
+        return;
+      }
+    }
+
     setCloudSync({
       status: "saved",
       message: "Đã lưu template"
@@ -5176,10 +5979,6 @@ export default function App() {
         <form className="login-card" onSubmit={handleAdminUnlock}>
           <div className="login-brand">
             <img src={ONEHOUSING_LOGO_URL} alt="OneHousing" className="login-logo" />
-            <div>
-              <div className="login-brand-name">OneHousing</div>
-              <div className="login-brand-sub">Công cụ tạo ảnh chỉ căn</div>
-            </div>
           </div>
 
           <div className="login-copy">
@@ -5214,6 +6013,54 @@ export default function App() {
       </main>
     );
   }
+
+  const adminSettingsDialog = showAdminSettingsModal ? (
+    <div className="modal-backdrop" role="dialog" aria-modal="true">
+      <form className="admin-modal" onSubmit={saveAdminSettings}>
+        <div className="modal-head">
+          <div className="modal-icon">
+            <BadgeCheck size={22} />
+          </div>
+          <button
+            type="button"
+            className="icon-btn"
+            title="Đóng"
+            onClick={() => setShowAdminSettingsModal(false)}
+          >
+            <X size={18} />
+          </button>
+        </div>
+        <h2>Tài khoản quản trị</h2>
+        <div className="form-group">
+          <label htmlFor="admin-new-password">Mật khẩu mới</label>
+          <input
+            id="admin-new-password"
+            autoFocus
+            type="password"
+            value={adminNewPassword}
+            onChange={(event) => setAdminNewPassword(event.target.value)}
+          />
+        </div>
+        <div className="form-group">
+          <label htmlFor="admin-confirm-password">Xác nhận mật khẩu</label>
+          <input
+            id="admin-confirm-password"
+            type="password"
+            value={adminConfirmPassword}
+            onChange={(event) => setAdminConfirmPassword(event.target.value)}
+          />
+        </div>
+        {adminSettingsError ? <div className="form-error">{adminSettingsError}</div> : null}
+        {adminSettingsMessage ? (
+          <div className="form-success">{adminSettingsMessage}</div>
+        ) : null}
+        <button type="submit" className="btn blue full">
+          <Save size={18} />
+          Lưu thay đổi
+        </button>
+      </form>
+    </div>
+  ) : null;
 
   if (showTemplateLibraryModal) {
     return (
@@ -5266,14 +6113,26 @@ export default function App() {
           <section className="project-hero">
             <div className="project-hero-inner">
               <h1>{projectPageTitle}</h1>
-              <label className="project-search">
-                <Search size={24} />
-                <input
-                  value={projectSearch}
-                  onChange={(event) => setProjectSearch(event.target.value)}
-                  placeholder="Tìm kiếm tên thư mục hoặc mẫu thiết kế"
-                />
-              </label>
+              {!activeProjectFolder ? (
+                <label className="project-search">
+                  <Search size={24} />
+                  <input
+                    value={projectSearch}
+                    onChange={(event) => setProjectSearch(event.target.value)}
+                    placeholder="Tìm kiếm tên dự án hoặc mẫu thiết kế"
+                  />
+                  {projectSearch ? (
+                    <button
+                      type="button"
+                      className="project-search-clear"
+                      aria-label="Xóa tìm kiếm"
+                      onClick={() => setProjectSearch("")}
+                    >
+                      <X size={16} />
+                    </button>
+                  ) : null}
+                </label>
+              ) : null}
             </div>
           </section>
 
@@ -5293,10 +6152,10 @@ export default function App() {
                         {upload.status === "uploading"
                           ? "Đang tải lên"
                           : upload.status === "saved"
-                            ? "Đã tải xong"
+                            ? "Đã lưu"
                             : upload.status === "error"
                               ? upload.error || "Lỗi tải ảnh"
-                              : "Sẵn sàng tải"}
+                              : "Chờ lưu"}
                       </span>
                     </div>
                   ))}
@@ -5314,7 +6173,7 @@ export default function App() {
                     />
                   </label>
                   <span>
-                    {pendingTemplateUploads.length} ảnh đang chờ · {pendingTemplateUploads.filter((upload) => upload.status === "saved").length} ảnh đã tải xong
+                    {pendingTemplateUploadSaveCount} ảnh chờ lưu
                   </span>
                 </div>
                 <button type="button" className="project-secondary-btn" disabled={isUploadingAsset} onClick={() => setPendingTemplateUploads([])}>
@@ -5323,10 +6182,10 @@ export default function App() {
                 <button
                   type="button"
                   className="project-primary-btn"
-                  disabled={isUploadingAsset || pendingTemplateUploads.every((upload) => upload.status === "saved")}
+                  disabled={isUploadingAsset || !pendingTemplateUploadSaveCount}
                   onClick={savePendingTemplateUpload}
                 >
-                  Lưu mẫu
+                  Lưu tất cả
                 </button>
               </div>
             ) : null}
@@ -5362,7 +6221,7 @@ export default function App() {
                 </button>
                 {activeProjectFolder ? (
                   <div className="project-folder-toolbar">
-                  <div className="project-detail-tabs" role="tablist" aria-label="Nội dung trong thư mục">
+                  <div className="project-detail-tabs" role="tablist" aria-label="Nội dung trong dự án">
                     <button
                       type="button"
                       className={projectFolderDetailTab === "designs" ? "active" : ""}
@@ -5384,6 +6243,28 @@ export default function App() {
                       <span>{activeProjectFolderImageCount}</span>
                     </button>
                   </div>
+                  <label className="project-tab-search">
+                    <Search size={20} />
+                    <input
+                      value={projectSearch}
+                      onChange={(event) => setProjectSearch(event.target.value)}
+                      placeholder={
+                        projectFolderDetailTab === "images"
+                          ? "Tìm kiếm hình ảnh"
+                          : "Tìm kiếm thiết kế"
+                      }
+                    />
+                    {projectSearch ? (
+                      <button
+                        type="button"
+                        className="project-search-clear"
+                        aria-label="Xóa tìm kiếm"
+                        onClick={() => setProjectSearch("")}
+                      >
+                        <X size={15} />
+                      </button>
+                    ) : null}
+                  </label>
                   <div className="project-detail-action-row">
                     {isAdminProjectManager && projectFolderDetailTab === "designs" ? (
                       <button
@@ -5473,14 +6354,14 @@ export default function App() {
                 >
                   {isAdminProjectManager ? (
                     <div className="project-admin-folder-title-row">
-                      <h2>Thư mục</h2>
+                      <h2>Dự án</h2>
                       <button
                         type="button"
                         className="project-secondary-btn"
                         onClick={() => createTemplateFolder(activeProjectFolder?.id || null)}
                       >
                         <FolderPlus size={17} />
-                        Tạo thư mục mới
+                        Tạo dự án mới
                       </button>
                     </div>
                   ) : (
@@ -5492,7 +6373,7 @@ export default function App() {
                         onClick={() => setIsFoldersCollapsed((current) => !current)}
                       >
                         {isFoldersCollapsed ? <ChevronRight size={20} /> : <ChevronDown size={20} />}
-                        <h2>Thư mục</h2>
+                        <h2>Dự án</h2>
                       </button>
                     </div>
                   )}
@@ -5517,7 +6398,7 @@ export default function App() {
                       const childCount = appState.templateFolders.filter(
                         (candidate) => candidate.parentId === folder.id
                       ).length;
-                      const designCount = appState.templates.filter(
+                      const designCount = visibleTemplates.filter(
                         (candidate) => candidate.folderId === folder.id
                       ).length;
                       const imageCount = appState.templateImages.filter(
@@ -5530,28 +6411,20 @@ export default function App() {
                           role="button"
                           tabIndex={0}
                           onClick={() => {
-                            setBrowserPath(getProjectFolderPath(folder.id, projectRouteAdmin));
-                            setProjectFolderId(folder.id);
-                            setProjectListingMode("home");
-                            setProjectDesignPage(1);
+                            openProjectFolder(folder.id, "designs");
                             setSelectedTemplateFolderId(folder.id);
                             setIsDesignsCollapsed(false);
-                            setProjectSearch("");
                           }}
                           onKeyDown={(event) => {
                             if (event.key === "Enter" || event.key === " ") {
                               event.preventDefault();
-                              setBrowserPath(getProjectFolderPath(folder.id, projectRouteAdmin));
-                              setProjectFolderId(folder.id);
-                              setProjectListingMode("home");
-                              setProjectDesignPage(1);
+                              openProjectFolder(folder.id, "designs");
                               setSelectedTemplateFolderId(folder.id);
                               setIsDesignsCollapsed(false);
-                              setProjectSearch("");
                             }
                           }}
                         >
-                          <Folder size={34} />
+                          <ProjectFolderIcon size="lg" />
                           <div>
                             {isAdminProjectManager && editingTemplateFolderId === folder.id ? (
                               <input
@@ -5578,7 +6451,7 @@ export default function App() {
                               <button
                                 type="button"
                                 title="Tùy chọn"
-                                aria-label="Tùy chọn thư mục"
+                                aria-label="Tùy chọn dự án"
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   setOpenTemplateFolderMenuId((current) =>
@@ -5660,13 +6533,32 @@ export default function App() {
                       {displayedManagementItems.map((item) => (
                         <article
                           key={`${item.kind}-${item.id}`}
-                          className="project-design-card"
+                          className={[
+                            "project-design-card",
+                            canSelectProjectImages && item.kind === "template" ? "selectable" : "",
+                            selectedTemplateIds.includes(item.id) ? "selected" : ""
+                          ].filter(Boolean).join(" ")}
                           role="button"
                           tabIndex={0}
-                          onClick={() => openProjectItem(item)}
+                          aria-pressed={
+                            canSelectProjectImages && item.kind === "template"
+                              ? selectedTemplateIds.includes(item.id)
+                              : undefined
+                          }
+                          onClick={() => {
+                            if (canSelectProjectImages && item.kind === "template") {
+                              toggleTemplateSelection(item.id);
+                              return;
+                            }
+                            openProjectItem(item);
+                          }}
                           onKeyDown={(event) => {
                             if (event.key === "Enter" || event.key === " ") {
                               event.preventDefault();
+                              if (canSelectProjectImages && item.kind === "template") {
+                                toggleTemplateSelection(item.id);
+                                return;
+                              }
                               openProjectItem(item);
                             }
                           }}
@@ -5684,6 +6576,17 @@ export default function App() {
                               <span />
                             )}
                           </button>
+                          {canSelectProjectImages && item.kind === "template" ? (
+                            <label className="project-image-select" onClick={(event) => event.stopPropagation()}>
+                              <input
+                                type="checkbox"
+                                checked={selectedTemplateIds.includes(item.id)}
+                                onChange={() => toggleTemplateSelection(item.id)}
+                                aria-label={`Chọn ${item.name}`}
+                              />
+                              <span />
+                            </label>
+                          ) : null}
                           <div className="project-design-meta">
                             {!isAdminProjectManager ? (
                               <strong>{item.kind === "design" ? localizeProjectName(item.name) : item.name}</strong>
@@ -5710,6 +6613,18 @@ export default function App() {
                                 title="Đổi tên mẫu"
                               />
                             )}
+                            {!activeProjectFolder && item.kind === "design" ? (
+                              <button
+                                type="button"
+                                className="project-card-folder-link"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openProjectFolder(item.folderId, "designs");
+                                }}
+                              >
+                                {item.folderName}
+                              </button>
+                            ) : null}
                             <span>
                               {item.width} x {item.height} · {formatProjectTime(item.updatedAt)}
                             </span>
@@ -5779,44 +6694,73 @@ export default function App() {
                     ) : null}
                   </>
                 ) : !isDesignsCollapsed ? (
-                  <div className="project-empty-state">
-                    {projectFolderDetailTab === "images" ? <ImageUp size={34} /> : <FolderPlus size={34} />}
-                    <strong>
-                      {projectFolderDetailTab === "images"
-                        ? "Thư mục này chưa có hình ảnh"
-                        : "Thư mục này chưa có thiết kế"}
-                    </strong>
-                    <span>
-                      {projectFolderDetailTab === "images"
-                        ? "Tải hình ảnh liên quan tới dự án lên để quản lý cùng thư mục."
-                        : "Tạo thiết kế mới trong thư mục này để bắt đầu."}
-                    </span>
-                    {projectFolderDetailTab === "images" ? (
-                      <div className="project-image-dropzone">
-                        <ImageUp size={22} />
-                        <div>
-                          <strong>Kéo ảnh vào đây hoặc dán ảnh từ clipboard</strong>
-                          <span>Có thể chọn nhiều ảnh từ máy, kéo thả nhiều ảnh hoặc copy ảnh rồi paste vào trang.</span>
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
+                  projectFolderDetailTab === "images" ? (
+                    <div className="project-empty-state images-only">
+                      <ImageUp size={34} />
+                      <strong>Kéo ảnh vào đây hoặc dán ảnh từ clipboard</strong>
+                      <span>Có thể chọn nhiều ảnh từ máy, kéo thả nhiều ảnh hoặc copy ảnh rồi paste vào trang.</span>
+                    </div>
+                  ) : (
+                    <div className="project-empty-state">
+                      <FolderPlus size={34} />
+                      <strong>Dự án này chưa có thiết kế</strong>
+                      <span>Tạo thiết kế mới trong dự án này để bắt đầu.</span>
+                    </div>
+                  )
                 ) : null}
             </section>
             ) : null}
           </section>
         </main>
 
-        {false && selectedTemplateIds.length ? (
+        {selectedProjectImageCount ? (
           <button
             type="button"
             className="project-floating-delete"
-            onClick={deleteSelectedTemplates}
+            onClick={deleteSelectedProjectImages}
           >
             <Trash2 size={18} />
-            Xóa {selectedTemplateIds.length} mẫu
+            Xóa {selectedProjectImageCount} ảnh đã chọn
           </button>
         ) : null}
+
+        {pendingProjectImageDeleteIds.length ? (
+          <div className="modal-backdrop" role="dialog" aria-modal="true">
+            <div className="admin-modal confirm-modal">
+              <div className="modal-head">
+                <div className="modal-icon danger-icon">
+                  <Trash2 size={22} />
+                </div>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  title="Đóng"
+                  onClick={() => setPendingProjectImageDeleteIds([])}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+              <h2>Xóa ảnh đã chọn?</h2>
+              <p className="confirm-copy">
+                {pendingProjectImageDeleteIds.length} ảnh sẽ bị xóa khỏi dự án và không thể khôi phục lại được.
+              </p>
+              <div className="confirm-actions">
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setPendingProjectImageDeleteIds([])}
+                >
+                  Hủy
+                </button>
+                <button type="button" className="btn danger" onClick={confirmDeleteSelectedProjectImages}>
+                  Xóa ảnh
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {adminSettingsDialog}
 
         {previewTemplate ? (
           <div className="modal-backdrop preview-backdrop" role="dialog" aria-modal="true">
@@ -5860,8 +6804,7 @@ export default function App() {
                 <div>
                   <h2>Tải ảnh lên</h2>
                   <p className="template-preview-meta">
-                    {pendingTemplateUploads.length} ảnh đang chờ ·{" "}
-                    {pendingTemplateUploads.filter((upload) => upload.status === "saved").length} ảnh đã tải xong
+                    {pendingTemplateUploadSaveCount} ảnh chờ lưu
                   </p>
                 </div>
                 <button
@@ -5888,15 +6831,13 @@ export default function App() {
                         }
                       />
                     </label>
-                    <span>
-                      {upload.status === "uploading"
-                        ? "Đang tải lên"
-                        : upload.status === "saved"
-                          ? "Đã tải xong"
-                          : upload.status === "error"
-                            ? upload.error || "Lỗi tải ảnh"
-                            : `${upload.width} x ${upload.height}px`}
-                    </span>
+                    {upload.status === "uploading" || upload.status === "error" ? (
+                      <span>
+                        {upload.status === "uploading"
+                          ? "Đang tải lên"
+                          : upload.error || "Lỗi tải ảnh"}
+                      </span>
+                    ) : null}
                   </div>
                 ))}
               </div>
@@ -5908,12 +6849,12 @@ export default function App() {
                   disabled={isUploadingAsset}
                   onClick={() => setPendingTemplateUploads([])}
                 >
-                  {pendingTemplateUploads.every((upload) => upload.status === "saved") ? "Đóng" : "Hủy"}
+                  Hủy
                 </button>
                 <button
                   type="button"
                   className="btn blue"
-                  disabled={isUploadingAsset || pendingTemplateUploads.every((upload) => upload.status === "saved")}
+                  disabled={isUploadingAsset || !pendingTemplateUploadSaveCount}
                   onClick={savePendingTemplateUpload}
                 >
                   {isUploadingAsset ? "Đang tải..." : "Lưu tất cả"}
@@ -5971,32 +6912,32 @@ export default function App() {
         <button
           type="button"
           className={activeDesignPanel === "elements" ? "rail-tab active" : "rail-tab"}
-          title="Elements"
+          title="Thành phần"
           aria-pressed={activeDesignPanel === "elements"}
           onClick={() => setActiveDesignPanel("elements")}
         >
           <Shapes size={24} />
-          <span>Elements</span>
+          <span>Thành phần</span>
         </button>
         <button
           type="button"
           className={activeDesignPanel === "images" ? "rail-tab active" : "rail-tab"}
-          title="Images"
+          title="Ảnh"
           aria-pressed={activeDesignPanel === "images"}
           onClick={() => setActiveDesignPanel("images")}
         >
           <ImageUp size={24} />
-          <span>Images</span>
+          <span>Ảnh</span>
         </button>
         <button
           type="button"
           className={activeDesignPanel === "text" ? "rail-tab active" : "rail-tab"}
-          title={isAdminWorkspace ? "Text" : "Data"}
+          title={isAdminWorkspace ? "Chữ" : "Dữ liệu"}
           aria-pressed={activeDesignPanel === "text"}
           onClick={() => setActiveDesignPanel("text")}
         >
           {isAdminWorkspace ? <Type size={24} /> : <FileSpreadsheet size={24} />}
-          <span>{isAdminWorkspace ? "Text" : "Data"}</span>
+          <span>{isAdminWorkspace ? "Chữ" : "Dữ liệu"}</span>
         </button>
 
         {isAdminWorkspace ? (
@@ -6020,11 +6961,11 @@ export default function App() {
                   }}
                 >
                   <ImageUp size={16} />
-                  Images
+                  Ảnh
                 </button>
                 <button type="button" onClick={openDatasetLibraryModal}>
                   <FileSpreadsheet size={16} />
-                  Data
+                  Dữ liệu
                 </button>
                 <button type="button" onClick={openFontLibraryModal}>
                   <Type size={16} />
@@ -6051,12 +6992,12 @@ export default function App() {
               <button
                 type="button"
                 className="topbar-folder-back-btn"
-                title="Quay lại thư mục của thiết kế"
-                aria-label="Quay lại thư mục của thiết kế"
+                title="Quay lại dự án của thiết kế"
+                aria-label="Quay lại dự án của thiết kế"
                 onClick={openCurrentTemplateFolder}
               >
                 <ArrowLeft size={17} />
-                <span>Quay lại thư mục</span>
+                <span>Quay lại dự án</span>
               </button>
             ) : (
               <button
@@ -6073,14 +7014,17 @@ export default function App() {
           <div className="topbar-title-wrap" ref={pageSizeMenuRef}>
             <button
               type="button"
-              className={showPageSizeMenu ? "topbar-title active" : "topbar-title"}
-              aria-expanded={showPageSizeMenu}
-              title="Change page size"
+              className={`${showPageSizeMenu ? "topbar-title active" : "topbar-title"} ${
+                isAdminWorkspace ? "" : "readonly"
+              }`}
+              aria-expanded={isAdminWorkspace ? showPageSizeMenu : undefined}
+              aria-disabled={!isAdminWorkspace}
+              title={isAdminWorkspace ? "Chỉnh thông tin trang" : "Chỉ admin được chỉnh sửa"}
               onClick={openPageSizeMenu}
             >
               {template.name} - {template.width} x {template.height} px
             </button>
-            {showPageSizeMenu ? (
+            {showPageSizeMenu && isAdminWorkspace ? (
               <form
                 className="page-size-popover"
                 onSubmit={(event) => {
@@ -6147,8 +7091,14 @@ export default function App() {
             ) : null}
           </div>
           <div className="topbar-right">
-            <div className={`cloud-sync-pill ${cloudSync.status}`}>
-              <Save size={15} />
+            <div className={`cloud-sync-status ${cloudSync.status}`}>
+              {cloudSync.status === "saving" || cloudSync.status === "loading" ? (
+                <LoaderCircle className="cloud-sync-icon" size={16} />
+              ) : cloudSync.status === "error" ? (
+                <AlertCircle className="cloud-sync-icon" size={16} />
+              ) : (
+                <CheckCircle2 className="cloud-sync-icon" size={16} />
+              )}
               {cloudSync.message}
             </div>
             <div className="topbar-download-wrap" ref={downloadMenuRef}>
@@ -6232,85 +7182,126 @@ export default function App() {
           <section className="left-panel panel design-panel">
             {activeDesignPanel === "elements" ? (
               <>
-                <div className="section-label">Browse categories</div>
+                <div className="section-label">Duyệt danh mục</div>
                 <div className="element-category-grid">
                   <button type="button" className="element-card" onClick={() => addShapeLayer("frame")}>
                     <div className="element-preview frame-preview">
                       <div />
                     </div>
-                    <span>Frames</span>
+                    <span>Khung</span>
                   </button>
                   <button type="button" className="element-card" onClick={() => addShapeLayer("rect")}>
                     <div className="element-preview shape-preview square-preview">
                       <Square size={34} />
                     </div>
-                    <span>Shape</span>
+                    <span>Hình khối</span>
                   </button>
                   <button type="button" className="element-card" onClick={() => addShapeLayer("circle")}>
                     <div className="element-preview shape-preview circle-preview">
                       <Circle size={38} />
                     </div>
-                    <span>Circle</span>
+                    <span>Hình tròn</span>
                   </button>
                 </div>
 
-                <div className="design-section-divider" />
+                {isAdminWorkspace ? (
+                  <>
+                    <div className="design-section-divider" />
 
-                <div className="form-group">
-                  <label>Background image</label>
-                  {template.backgroundDataUrl ? (
-                    <div className="selected-template-preview">
-                      <img src={template.backgroundDataUrl} alt={template.name} />
-                      <button
-                        type="button"
-                        className="selected-template-delete"
-                        title="Remove current image"
-                        aria-label="Remove current image"
-                        onClick={removeCurrentTemplateImage}
-                      >
-                        <X size={15} />
-                      </button>
-                      <button
-                        type="button"
-                        className="selected-template-change"
-                        onClick={openTemplatePickerModal}
-                      >
-                        Change
-                      </button>
+                    <div className="form-group">
+                      <label>Ảnh nền</label>
+                      {template.backgroundDataUrl ? (
+                        <div className="selected-template-preview">
+                          <img src={template.backgroundDataUrl} alt={template.name} />
+                          <button
+                            type="button"
+                            className="selected-template-delete"
+                            title="Xóa ảnh hiện tại"
+                            aria-label="Xóa ảnh hiện tại"
+                            onClick={removeCurrentTemplateImage}
+                          >
+                            <X size={15} />
+                          </button>
+                          <button
+                            type="button"
+                            className="selected-template-change"
+                            onClick={openTemplatePickerModal}
+                          >
+                            Đổi ảnh
+                          </button>
+                        </div>
+                      ) : (
+                        <button type="button" className="btn full" onClick={openTemplatePickerModal}>
+                          <ImageUp size={18} />
+                          Thêm ảnh
+                        </button>
+                      )}
                     </div>
-                  ) : (
-                    <button type="button" className="btn full" onClick={openTemplatePickerModal}>
-                      <ImageUp size={18} />
-                      Add image
-                    </button>
-                  )}
-                </div>
+                  </>
+                ) : null}
               </>
             ) : activeDesignPanel === "images" ? (
               <>
                 <div className="panel-head compact">
                   <div>
-                    <h2>Images</h2>
-                    <p>Choose a folder, then click an image to place it into a frame</p>
+                    <h2>Ảnh</h2>
+                    <p>{isAdminWorkspace ? "Bấm ảnh để đặt vào khung" : "Chọn một dự án, rồi bấm ảnh để đặt vào khung"}</p>
                   </div>
                   <ImageUp size={20} />
                 </div>
 
-                <div className="form-group">
-                  <label>Folder</label>
-                  <CustomSelect
-                    value={activeImageFolderId}
-                    options={flattenedTemplateFolders.map((folder) => ({
-                      value: folder.id,
-                      label: `${folder.depth ? "  ".repeat(folder.depth) : ""}${folder.name}`
-                    }))}
-                    onChange={setSelectedImageFolderId}
-                  />
+                {!isAdminWorkspace ? (
+                  <div className="form-group">
+                    <label>Dự án</label>
+                    <CustomSelect
+                      value={activeImageFolderId}
+                      options={flattenedTemplateFolders.map((folder) => ({
+                        value: folder.id,
+                        label: `${folder.depth ? "  ".repeat(folder.depth) : ""}${folder.name}`
+                      }))}
+                      onChange={setSelectedImageFolderId}
+                    />
+                  </div>
+                ) : null}
+
+                <div className="image-panel-tools">
+                  <label className="image-panel-search">
+                    <Search size={17} />
+                    <input
+                      value={imageSearch}
+                      onChange={(event) => setImageSearch(event.target.value)}
+                      placeholder="Tìm kiếm ảnh"
+                    />
+                    {imageSearch ? (
+                      <button
+                        type="button"
+                        className="image-panel-clear"
+                        title="Xóa tìm kiếm"
+                        aria-label="Xóa tìm kiếm"
+                        onClick={() => setImageSearch("")}
+                      >
+                        <X size={15} />
+                      </button>
+                    ) : null}
+                  </label>
+                  <button
+                    type="button"
+                    className="image-panel-sort"
+                    title={imageSortOrder === "newest" ? "Sắp xếp cũ nhất" : "Sắp xếp mới nhất"}
+                    aria-label={imageSortOrder === "newest" ? "Sắp xếp cũ nhất" : "Sắp xếp mới nhất"}
+                    onClick={() =>
+                      setImageSortOrder((current) => (current === "newest" ? "oldest" : "newest"))
+                    }
+                  >
+                    <span key={imageSortOrder} className="project-tool-icon-motion">
+                      {imageSortOrder === "newest" ? <ArrowUpDown size={20} /> : <ArrowDownUp size={20} />}
+                    </span>
+                  </button>
                 </div>
 
-                {imagesInActiveFolder.length ? (
+                {visiblePanelImages.length ? (
                   <div className="image-library-grid">
-                    {imagesInActiveFolder.map((item) => (
+                    {visiblePanelImages.map((item) => (
                       <button
                         type="button"
                         key={item.id}
@@ -6321,6 +7312,7 @@ export default function App() {
                           event.dataTransfer.effectAllowed = "copy";
                           event.dataTransfer.setData("application/x-template-image-id", item.id);
                           event.dataTransfer.setData("text/plain", item.name);
+                          setTemplateImageDragPreview(event, item);
                         }}
                         onClick={() => placeImageInFrame(item)}
                       >
@@ -6332,50 +7324,44 @@ export default function App() {
                 ) : (
                   <div className="image-library-empty">
                     <ImageUp size={24} />
-                    <span>No images in this folder</span>
+                    <span>Chưa có ảnh trong dự án này</span>
                   </div>
                 )}
 
                 {isAdminWorkspace ? (
-                  <button type="button" className="btn full image-manager-btn" onClick={openTemplateLibraryModal}>
-                    <FolderPlus size={18} />
-                    Manage image folders
-                  </button>
+                  <label className={isUploadingAsset ? "btn full image-manager-btn disabled" : "btn full image-manager-btn"}>
+                    <ImageUp size={18} />
+                    {isUploadingAsset ? "Đang tải ảnh..." : "Tải ảnh lên"}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      disabled={isUploadingAsset}
+                      onChange={(event) => {
+                        uploadImagesToCurrentTemplateFolder(Array.from(event.target.files || []));
+                        event.target.value = "";
+                      }}
+                    />
+                  </label>
                 ) : null}
               </>
             ) : (
               <>
-                <div className="panel-head compact">
-                  <div>
-                    <h2>{isAdminWorkspace ? "Text" : "Data"}</h2>
-                    <p>{isAdminWorkspace ? "Add text to the canvas" : "Chọn mã căn để tự động điền thông tin trên ảnh"}</p>
-                  </div>
-                  {isAdminWorkspace ? <Type size={20} /> : <FileSpreadsheet size={20} />}
-                </div>
-
-                {isAdminWorkspace ? (
-                  <>
-                    <div className="text-preset-list">
-                      <button type="button" onClick={() => addFreeTextLayer(120, 120, "Add a heading", 56)}>
-                        Add a heading
-                      </button>
-                      <button type="button" onClick={() => addFreeTextLayer(120, 190, "Add a subheading", 34)}>
-                        Add a subheading
-                      </button>
-                      <button type="button" onClick={() => addFreeTextLayer(120, 250, "Add a little bit of body text", 24)}>
-                        Add body text
-                      </button>
+                {!isAdminWorkspace ? (
+                  <div className="panel-head compact">
+                    <div>
+                      <h2>Dữ liệu</h2>
+                      <p>Chọn mã căn để tự động điền thông tin trên ảnh</p>
                     </div>
-
-                    <div className="design-section-divider" />
-                  </>
+                    <FileSpreadsheet size={20} />
+                  </div>
                 ) : null}
 
                 <div className="form-group">
-                  <label>Dataset</label>
+                  <label>Bộ dữ liệu</label>
                   <CustomSelect
                     value={dataset.id}
-                    placeholder="Choose dataset"
+                    placeholder="Chọn bộ dữ liệu"
                     options={appState.datasets.map((item) => ({
                       value: item.id,
                       label: item.name
@@ -6393,22 +7379,22 @@ export default function App() {
                 {hasSelectedDataset ? (
                   <>
                     <div className="form-group">
-                      <label>{isAdminWorkspace ? "Preview row" : "Mã căn"}</label>
+                      <label>{isAdminWorkspace ? "Dòng xem trước" : "Mã căn"}</label>
                       <CustomSelect
                         value={String(selectedRowIndex)}
                         options={dataset.rows.map((row, index) => ({
                           value: String(index),
-                          label: row[dataset.keyColumn] || `Row ${index + 1}`
+                          label: row[dataset.keyColumn] || `Dòng ${index + 1}`
                         }))}
                         onChange={(nextValue) => setSelectedRowIndex(Number(nextValue))}
                         searchable
-                        searchPlaceholder={isAdminWorkspace ? "Search row" : "Tìm mã căn"}
+                        searchPlaceholder={isAdminWorkspace ? "Tìm dòng" : "Tìm mã căn"}
                       />
                     </div>
 
                     {isAdminWorkspace ? (
                       <div className="column-section">
-                        <div className="section-label">Data text</div>
+                        <div className="section-label">Chữ dữ liệu</div>
                         <div className="column-grid">
                           {dataset.columns.map((column) => (
                             <button
@@ -6420,7 +7406,7 @@ export default function App() {
                                 event.dataTransfer.setData("text/column", column)
                               }
                               onClick={() => addTextLayer(column)}
-                              disabled={!canEditWorkspace}
+                              disabled={!canAddDataTextLayer}
                             >
                               <Plus size={14} />
                               {column}
@@ -6545,6 +7531,8 @@ export default function App() {
                                 updateSelectedLayer({
                                   imageDataUrl: undefined,
                                   imageName: undefined,
+                                  imageCropFocusX: undefined,
+                                  imageCropFocusY: undefined,
                                   imageUsage: undefined
                                 })
                               }
@@ -6567,7 +7555,7 @@ export default function App() {
                           disabled={!canEditWorkspace}
                           onClick={() =>
                             updateSelectedLayer({
-                              stroke: selectedLayer.stroke || "#8b3dff",
+                              stroke: selectedLayer.stroke || "#ffffff",
                               strokeWidth: selectedLayer.strokeWidth ? 0 : 4
                             })
                           }
@@ -6579,7 +7567,7 @@ export default function App() {
                           <>
                             <div className="toolbar-color-field compact-color-field stroke-color-field" title="Stroke color">
                               <HexColorInput
-                                value={selectedLayer.stroke || "#8b3dff"}
+                                value={selectedLayer.stroke || "#ffffff"}
                                 disabled={!canEditWorkspace}
                                 onChange={(nextValue) => updateSelectedLayer({ stroke: nextValue })}
                               />
@@ -6612,6 +7600,17 @@ export default function App() {
                       </>
                     ) : null}
 
+                    {selectedLayerIsStandaloneImage ? (
+                      <button
+                        type="button"
+                        className="toolbar-icon-btn"
+                        title="Reset về kích thước gốc"
+                        disabled={!canEditWorkspace || !selectedLayer.imageDataUrl}
+                        onClick={resetSelectedImageToOriginalSize}
+                      >
+                        <Maximize2 size={16} />
+                      </button>
+                    ) : null}
                     <label className="toolbar-number-field">
                       <span
                         className="toolbar-scrub-handle"
@@ -6656,38 +7655,56 @@ export default function App() {
                         onChange={(event) => updateSelectedLayer({ height: Number(event.target.value) })}
                       />
                     </label>
-                    <label className="toolbar-number-field">
-                      <span
-                        className={
-                          selectedLayer.shapeVariant === "circle"
-                            ? "toolbar-field-icon"
-                            : "toolbar-field-icon toolbar-scrub-handle"
-                        }
-                        title="Rounded corners"
-                        onPointerDown={
-                          selectedLayer.shapeVariant === "circle"
-                            ? undefined
-                            : (event) =>
-                                beginToolbarNumberScrub(event, {
-                                  value: selectedShapeRadius,
-                                  min: 0,
-                                  max: 240,
-                                  onChange: (nextValue) => updateSelectedLayer({ cornerRadius: nextValue })
-                                })
-                        }
-                      >
-                        <SquareRoundCorner size={15} />
-                      </span>
-                      <input
-                        ref={shapeRadiusInputRef}
-                        type="number"
-                        min={0}
-                        max={240}
-                        value={selectedShapeRadius}
-                        disabled={!canEditWorkspace || selectedLayer.shapeVariant === "circle"}
-                        onChange={(event) => updateSelectedLayer({ cornerRadius: Number(event.target.value) })}
-                      />
-                    </label>
+                    <div className="corner-radius-control">
+                      <div className="toolbar-number-field corner-radius-field">
+                        <button
+                          type="button"
+                          className="toolbar-field-icon corner-radius-menu-btn"
+                          title="Chỉnh từng góc"
+                          aria-expanded={showCornerRadiusPopover}
+                          disabled={!canEditWorkspace || selectedLayer.shapeVariant === "circle"}
+                          onClick={() => setShowCornerRadiusPopover((current) => !current)}
+                        >
+                          <SquareRoundCorner size={15} />
+                        </button>
+                        <input
+                          ref={shapeRadiusInputRef}
+                          type="number"
+                          min={0}
+                          max={CORNER_RADIUS_MAX}
+                          placeholder={selectedShapeCornersAreUniform ? undefined : "Mix"}
+                          value={selectedShapeCornersAreUniform ? selectedShapeRadius : ""}
+                          disabled={!canEditWorkspace || selectedLayer.shapeVariant === "circle"}
+                          onChange={(event) => updateSelectedCornerRadiusForAll(Number(event.target.value))}
+                        />
+                      </div>
+                      {showCornerRadiusPopover && selectedLayer.shapeVariant !== "circle" ? (
+                        <div className="corner-radius-popover" role="dialog" aria-label="Chỉnh từng góc">
+                          <div className="corner-radius-popover-title">Từng góc</div>
+                          <div className="corner-radius-grid">
+                            {CORNER_RADIUS_KEYS.map((corner) => (
+                              <label key={corner.key} className={`corner-radius-item ${corner.key}`}>
+                                <span
+                                  className="corner-radius-corner-icon"
+                                  title={corner.title}
+                                  aria-label={corner.title}
+                                />
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={CORNER_RADIUS_MAX}
+                                  value={selectedShapeCornerRadii[corner.key]}
+                                  disabled={!canEditWorkspace}
+                                  onChange={(event) =>
+                                    updateSelectedCornerRadiusCorner(corner.key, Number(event.target.value))
+                                  }
+                                />
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
                     {selectedLayerIsStandaloneImage ? (
                       <label className="toolbar-number-field opacity-field">
                         <span
@@ -6729,19 +7746,6 @@ export default function App() {
                   </>
                   ) : (
                   <>
-                    {typeof selectedLayer.content === "string" ? (
-                      <input
-                        className="toolbar-text-input"
-                        value={selectedLayer.content}
-                        disabled={!canEditWorkspace || hasMultiSelection}
-                        onChange={(event) =>
-                          updateSelectedLayer({
-                            content: event.target.value,
-                            name: event.target.value.trim() || "Free text"
-                          })
-                        }
-                      />
-                    ) : null}
                     <div className="toolbar-select font-select">
                       <CustomSelect
                         value={selectedLayer.fontFamily}
@@ -6761,7 +7765,7 @@ export default function App() {
                             nextStyle
                               ? {
                                   fontFamily: nextValue,
-                                  fontWeight: nextStyle.fontWeight || "400",
+                                  fontWeight: clampFontWeight(nextStyle.fontWeight),
                                   fontStyle: nextStyle.fontStyle || "normal"
                                 }
                               : { fontFamily: nextValue }
@@ -6923,7 +7927,8 @@ export default function App() {
                         <ShapeLayerNode
                           key={layer.id}
                           layer={layer}
-                          canDrag={canEditWorkspace && activeCanvasTool === "move"}
+                          canDrag={canEditWorkspace && activeCanvasTool === "move" && !imageCropEditLayerId}
+                          isEditingImageCrop={imageCropEditLayerId === layer.id}
                           setNode={(node) => {
                             if (node) layerRefs.current[layer.id] = node;
                           }}
@@ -6931,6 +7936,10 @@ export default function App() {
                           onDragStart={(event) => handleLayerDragStart(layer.id, event)}
                           onDragMove={(event) => handleLayerDragMove(layer.id, event)}
                           onDragEnd={(event) => handleLayerDragEnd(layer.id, event)}
+                          onDblClick={(event) => beginFrameImageCropEdit(layer.id, event)}
+                          onImageCropDragStart={(event) => handleImageCropDragStart(layer.id, event)}
+                          onImageCropDragMove={(event) => handleImageCropDragMove(layer.id, event)}
+                          onImageCropDragEnd={(event) => handleImageCropDragEnd(layer.id, event)}
                           onTransform={(event) => handleLayerTransform(layer.id, event)}
                           onTransformEnd={(event) => handleLayerTransformEnd(layer.id, event)}
                         />
@@ -6951,7 +7960,7 @@ export default function App() {
                           align={layer.align}
                           lineHeight={layer.lineHeight}
                           letterSpacing={layer.letterSpacing}
-                          draggable={canEditWorkspace && activeCanvasTool === "move"}
+                          draggable={canEditWorkspace && activeCanvasTool === "move" && !imageCropEditLayerId}
                           visible={inlineTextEditor?.layerId !== layer.id}
                           onMouseDown={(event) => selectLayerFromCanvas(layer.id, event)}
                           onTap={(event) => selectLayerFromCanvas(layer.id, event)}
@@ -6965,6 +7974,45 @@ export default function App() {
                         />
                       )
                     )}
+                    {imageCropGuideRect ? (
+                      <>
+                        <Rect
+                          ref={(node) => {
+                            imageCropGuideRectRef.current = node;
+                          }}
+                          name="image-crop-guide"
+                          x={imageCropGuideRect.x}
+                          y={imageCropGuideRect.y}
+                          width={imageCropGuideRect.width}
+                          height={imageCropGuideRect.height}
+                          stroke="#0ea5ff"
+                          strokeWidth={Math.max(1.5, 2 / stageScale)}
+                          dash={[6 / stageScale, 4 / stageScale]}
+                          listening={false}
+                        />
+                        {[
+                          [imageCropGuideRect.x, imageCropGuideRect.y],
+                          [imageCropGuideRect.x + imageCropGuideRect.width, imageCropGuideRect.y],
+                          [imageCropGuideRect.x + imageCropGuideRect.width, imageCropGuideRect.y + imageCropGuideRect.height],
+                          [imageCropGuideRect.x, imageCropGuideRect.y + imageCropGuideRect.height]
+                        ].map(([x, y], index) => (
+                          <KonvaCircle
+                            key={`image-crop-guide-handle-${index}`}
+                            ref={(node) => {
+                              imageCropGuideHandleRefs.current[index] = node;
+                            }}
+                            name="image-crop-guide"
+                            x={x}
+                            y={y}
+                            radius={Math.max(4, 5 / stageScale)}
+                            fill="#ffffff"
+                            stroke="#0ea5ff"
+                            strokeWidth={Math.max(1.5, 2 / stageScale)}
+                            listening={false}
+                          />
+                        ))}
+                      </>
+                    ) : null}
                     {selectionBox.visible ? (
                       <Rect
                         {...normalizeBox(selectionBox)}
@@ -6987,7 +8035,7 @@ export default function App() {
                     ))}
                     <Transformer
                       ref={transformerRef}
-                      visible={activeCanvasTool === "move" && !inlineTextEditor}
+                      visible={activeCanvasTool === "move" && !inlineTextEditor && !imageCropEditLayerId}
                       rotateEnabled={false}
                       enabledAnchors={
                         selectionHasShape
@@ -7133,10 +8181,10 @@ export default function App() {
                     title="Thêm text (T)"
                     aria-pressed={activeCanvasTool === "text"}
                     onClick={() => setActiveCanvasTool("text")}
-                    disabled={!canAddTextLayer}
+                    disabled={!canAddFreeTextLayer}
                   >
                     <Type size={18} />
-                    <span>Text</span>
+                    <span>Chữ</span>
                   </button>
                 </div>
                 <div className="zoom-controls bottom-zoom-controls" aria-label="Zoom controls">
@@ -7225,62 +8273,7 @@ export default function App() {
         </div>
       ) : null}
 
-      {showAdminSettingsModal ? (
-        <div className="modal-backdrop" role="dialog" aria-modal="true">
-          <form className="admin-modal" onSubmit={saveAdminSettings}>
-            <div className="modal-head">
-              <div className="modal-icon">
-                <BadgeCheck size={22} />
-              </div>
-              <button
-                type="button"
-                className="icon-btn"
-                title="Đóng"
-                onClick={() => setShowAdminSettingsModal(false)}
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <h2>Tài khoản quản trị</h2>
-            <div className="form-group">
-              <label htmlFor="admin-settings-name">Tên tài khoản</label>
-              <input
-                id="admin-settings-name"
-                autoFocus
-                value={adminSettingsName}
-                onChange={(event) => setAdminSettingsName(event.target.value)}
-              />
-            </div>
-            <div className="form-group">
-              <label htmlFor="admin-new-password">Mật khẩu mới</label>
-              <input
-                id="admin-new-password"
-                type="password"
-                value={adminNewPassword}
-                onChange={(event) => setAdminNewPassword(event.target.value)}
-                placeholder="Để trống nếu không đổi"
-              />
-            </div>
-            <div className="form-group">
-              <label htmlFor="admin-confirm-password">Xác nhận mật khẩu</label>
-              <input
-                id="admin-confirm-password"
-                type="password"
-                value={adminConfirmPassword}
-                onChange={(event) => setAdminConfirmPassword(event.target.value)}
-              />
-            </div>
-            {adminSettingsError ? <div className="form-error">{adminSettingsError}</div> : null}
-            {adminSettingsMessage ? (
-              <div className="form-success">{adminSettingsMessage}</div>
-            ) : null}
-            <button type="submit" className="btn blue full">
-              <Save size={18} />
-              Lưu thay đổi
-            </button>
-          </form>
-        </div>
-      ) : null}
+      {adminSettingsDialog}
 
       {showDatasetLibraryModal ? (
         <div className="library-page-backdrop" role="region" aria-label="Quản lý dữ liệu">
@@ -7643,11 +8636,11 @@ export default function App() {
             <div className="template-library-layout">
               <aside className="template-folder-pane">
                 <div className="template-folder-head">
-                  <span>Folder</span>
+                  <span>Dự án</span>
                   <button
                     type="button"
                     className="icon-btn"
-                    title="Tạo folder"
+                    title="Tạo dự án"
                     onClick={() => createTemplateFolder(null)}
                   >
                     <FolderPlus size={17} />
@@ -7665,7 +8658,7 @@ export default function App() {
                       style={{ paddingLeft: 12 + folder.depth * 16 }}
                       onClick={() => selectTemplateFolder(folder.id)}
                     >
-                      <Folder size={16} />
+                      <ProjectFolderIcon size="sm" />
                       {editingTemplateFolderId === folder.id ? (
                         <input
                           value={folder.name}
@@ -7680,7 +8673,7 @@ export default function App() {
                             if (event.key === "Enter") event.currentTarget.blur();
                             if (event.key === "Escape") setEditingTemplateFolderId(null);
                           }}
-                          title="Tên folder"
+                          title="Tên dự án"
                         />
                       ) : (
                         <span className="template-folder-name">{folder.name}</span>
@@ -7689,7 +8682,7 @@ export default function App() {
                         <button
                           type="button"
                           className="template-folder-menu-btn"
-                          title="Tùy chọn folder"
+                          title="Tùy chọn dự án"
                           onClick={(event) => {
                             event.stopPropagation();
                             setSelectedTemplateFolderId(folder.id);
@@ -7720,7 +8713,7 @@ export default function App() {
                                 deleteTemplateFolder(folder.id);
                               }}
                             >
-                              Xóa folder
+                              Xóa dự án
                             </button>
                           </div>
                         ) : null}
@@ -7733,9 +8726,9 @@ export default function App() {
               <section className="template-folder-content">
                 <div className="template-current-folder-head">
                   <div>
-                    <h3>{selectedTemplateFolder?.name || "Folder"}</h3>
+                    <h3>{selectedTemplateFolder?.name || "Dự án"}</h3>
                     <p>
-                      {selectedFolderChildren.length} folder con · {templatesInSelectedFolder.length} ảnh
+                      {selectedFolderChildren.length} dự án con · {templatesInSelectedFolder.length} ảnh
                     </p>
                   </div>
                   <div className="template-library-actions">
@@ -7746,12 +8739,12 @@ export default function App() {
                         onClick={() => createTemplateFolder(activeTemplateFolderId)}
                       >
                         <FolderPlus size={18} />
-                        Tạo folder con
+                        Tạo dự án con
                       </button>
                     ) : null}
                     <label className={selectedTemplateFolder ? "btn blue" : "btn blue disabled"}>
                       <ImageUp size={18} />
-                      Tải ảnh vào folder
+                      Tải ảnh vào dự án
                       <input
                         type="file"
                         accept="image/*"
@@ -7763,15 +8756,16 @@ export default function App() {
                         }}
                       />
                     </label>
-                    <button
-                      type="button"
-                      className="btn danger"
-                      disabled={!selectedTemplateIds.length}
-                      onClick={deleteSelectedTemplates}
-                    >
-                      <X size={18} />
-                      Xóa ảnh đã chọn
-                    </button>
+                    {selectedTemplateIds.length ? (
+                      <button
+                        type="button"
+                        className="btn danger"
+                        onClick={deleteSelectedTemplates}
+                      >
+                        <X size={18} />
+                        Xóa {selectedTemplateIds.length} ảnh đã chọn
+                      </button>
+                    ) : null}
                   </div>
                 </div>
 
@@ -7784,7 +8778,7 @@ export default function App() {
                         className="folder-chip-card"
                         onClick={() => selectTemplateFolder(folder.id)}
                       >
-                        <Folder size={18} />
+                        <ProjectFolderIcon size="md" />
                         {folder.name}
                       </button>
                     ))}
@@ -7797,7 +8791,7 @@ export default function App() {
                       {pendingTemplateUploads.map((upload) => (
                         <div key={upload.id} className={`project-upload-item ${upload.status}`}>
                           <img src={upload.dataUrl} alt="" />
-                          <span>{upload.status === "saved" ? "Đã tải xong" : upload.status === "uploading" ? "Đang tải lên" : upload.status === "error" ? upload.error || "Lỗi tải ảnh" : "Sẵn sàng tải"}</span>
+                          <span>{upload.status === "saved" ? "Đã lưu" : upload.status === "uploading" ? "Đang tải lên" : upload.status === "error" ? upload.error || "Lỗi tải ảnh" : "Chờ lưu"}</span>
                         </div>
                       ))}
                     </div>
@@ -7815,7 +8809,7 @@ export default function App() {
                         />
                       </div>
                       <div className="pending-template-meta">
-                        {pendingTemplateUploads.length} ảnh đang chờ · {pendingTemplateUploads.filter((upload) => upload.status === "saved").length} ảnh đã tải xong
+                        {pendingTemplateUploadSaveCount} ảnh chờ lưu
                       </div>
                       <div className="pending-template-actions">
                         <button
@@ -7828,10 +8822,10 @@ export default function App() {
                         <button
                           type="button"
                           className="btn blue"
-                          disabled={isUploadingAsset || pendingTemplateUploads.every((upload) => upload.status === "saved")}
+                          disabled={isUploadingAsset || !pendingTemplateUploadSaveCount}
                           onClick={savePendingTemplateUpload}
                         >
-                          Lưu ảnh
+                          Lưu tất cả
                         </button>
                       </div>
                     </div>
@@ -7914,10 +8908,10 @@ export default function App() {
 
             <h2>Chọn ảnh</h2>
 
-            <div className="template-library-layout">
+            <div className="template-library-layout template-picker-layout">
               <aside className="template-folder-pane">
                 <div className="template-folder-head">
-                  <span>Folder</span>
+                  <span>Dự án</span>
                 </div>
                 <div className="template-folder-list">
                   {flattenedTemplateFolders.map((folder) => (
@@ -7935,7 +8929,7 @@ export default function App() {
                         setSelectedPickerTemplateId(null);
                       }}
                     >
-                      <Folder size={16} />
+                      <ProjectFolderIcon size="sm" />
                       <span>{folder.name}</span>
                     </button>
                   ))}
@@ -7947,7 +8941,7 @@ export default function App() {
                   <div>
                     <h3>
                       {appState.templateFolders.find((folder) => folder.id === activePickerFolderId)
-                        ?.name || "Folder"}
+                        ?.name || "Dự án"}
                     </h3>
                     <p>{templatesInPickerFolder.length} ảnh</p>
                   </div>
@@ -8135,3 +9129,4 @@ function UploadIcon() {
     </div>
   );
 }
+
