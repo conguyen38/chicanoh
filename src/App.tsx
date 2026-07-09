@@ -118,6 +118,7 @@ type TextLayer = {
   content?: string;
   x: number;
   y: number;
+  rotation?: number;
   width: number;
   height?: number;
   fontFamily: string;
@@ -1325,6 +1326,7 @@ function normalizeLayer(layer: Partial<TextLayer> | null | undefined, index = 0)
     content: kind === "shape" ? undefined : typeof layer?.content === "string" ? layer.content : undefined,
     x: Number.isFinite(Number(layer?.x)) ? Number(layer?.x) : FALLBACK_TEXT_LAYER.x,
     y: Number.isFinite(Number(layer?.y)) ? Number(layer?.y) : FALLBACK_TEXT_LAYER.y,
+    rotation: Number.isFinite(Number(layer?.rotation)) ? Number(layer?.rotation) : 0,
     width: normalizePositiveNumber(layer?.width, FALLBACK_TEXT_LAYER.width),
     height: kind === "shape" ? normalizePositiveNumber(layer?.height, 220) : layer?.height,
     fontFamily:
@@ -2181,6 +2183,7 @@ function ShapeLayerNode({
   const commonProps = {
     x: layer.x,
     y: layer.y,
+    rotation: layer.rotation || 0,
     width,
     height,
     draggable: isEditingImageCrop ? Boolean(layer.imageDataUrl) : canDrag,
@@ -2220,6 +2223,24 @@ function ShapeLayerNode({
       cornerRadius={cornerRadius}
     />
   );
+}
+
+function styleTransformerAnchor(anchor: Konva.Rect) {
+  if (!anchor.hasName("rotater")) return;
+  anchor.setAttrs({
+    width: 28,
+    height: 28,
+    offsetX: 14,
+    offsetY: 14,
+    cornerRadius: 14,
+    fill: "#ffffff",
+    stroke: "#cbd5e1",
+    strokeWidth: 1,
+    shadowColor: "#0f172a",
+    shadowBlur: 10,
+    shadowOpacity: 0.16,
+    shadowOffsetY: 2
+  });
 }
 
 function isEditableTarget(target: EventTarget | null) {
@@ -2538,7 +2559,7 @@ export default function App() {
   const currentTemplateFolder =
     appState.templateFolders.find((folder) => folder.id === currentTemplateFolderId) ||
     appState.templateFolders[0];
-  const imagePanelFolderId = isAdminPath ? currentTemplateFolderId : activeImageFolderId;
+  const imagePanelFolderId = currentTemplateFolderId;
   const isAllProjectsView = activeTemplateFolderId === fallbackTemplateFolderId;
   const selectedTemplateFolder =
     appState.templateFolders.find((folder) => folder.id === activeTemplateFolderId) ||
@@ -2742,6 +2763,9 @@ export default function App() {
   const selectedLayerIsShape = isShapeLayer(selectedLayer);
   const selectedLayerIsStandaloneImage = isStandaloneImageLayer(selectedLayer);
   const selectionHasShape = selectedLayers.some((layer) => isShapeLayer(layer));
+  const selectionHasRotatableImage = selectedLayers.some(
+    (layer) => isShapeLayer(layer) && Boolean(layer.imageDataUrl)
+  );
   const selectedShapeWidth = Math.round(selectedLayer?.width ?? 0);
   const selectedShapeHeight = Math.round(selectedLayer?.height ?? selectedLayer?.width ?? 0);
   const selectedShapeCornerRadii = selectedLayerIsShape && selectedLayer
@@ -5763,6 +5787,7 @@ export default function App() {
               ...item,
               x: Math.round(node.x()),
               y: Math.round(node.y()),
+              rotation: Math.round(node.rotation()),
               width: Math.round(node.width()),
               ...(isShapeLayer(item) ? { height: Math.round(node.height()) } : {})
             }
@@ -7245,12 +7270,36 @@ export default function App() {
                 <div className="panel-head compact">
                   <div>
                     <h2>Ảnh</h2>
-                    <p>{isAdminWorkspace ? "Bấm ảnh để đặt vào khung" : "Chọn một dự án, rồi bấm ảnh để đặt vào khung"}</p>
+                    <p>Bấm ảnh để đặt vào khung</p>
                   </div>
-                  <ImageUp size={20} />
+                  {isAdminWorkspace ? (
+                    <label
+                      className={
+                        isUploadingAsset
+                          ? "image-panel-upload-icon disabled"
+                          : "image-panel-upload-icon"
+                      }
+                      title={isUploadingAsset ? "Đang tải ảnh..." : "Tải ảnh lên"}
+                      aria-label={isUploadingAsset ? "Đang tải ảnh..." : "Tải ảnh lên"}
+                    >
+                      <ImageUp size={20} />
+                      <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        disabled={isUploadingAsset}
+                        onChange={(event) => {
+                          uploadImagesToCurrentTemplateFolder(Array.from(event.target.files || []));
+                          event.target.value = "";
+                        }}
+                      />
+                    </label>
+                  ) : (
+                    <ImageUp size={20} />
+                  )}
                 </div>
 
-                {!isAdminWorkspace ? (
+                {false && !isAdminWorkspace ? (
                   <div className="form-group">
                     <label>Dự án</label>
                     <CustomSelect
@@ -7284,6 +7333,29 @@ export default function App() {
                       </button>
                     ) : null}
                   </label>
+                  {isAdminWorkspace ? (
+                    <label
+                      className={
+                        isUploadingAsset
+                          ? "image-panel-upload-icon disabled"
+                          : "image-panel-upload-icon"
+                      }
+                      title={isUploadingAsset ? "Đang tải ảnh..." : "Tải ảnh lên"}
+                      aria-label={isUploadingAsset ? "Đang tải ảnh..." : "Tải ảnh lên"}
+                    >
+                      <ImageUp size={20} />
+                      <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        disabled={isUploadingAsset}
+                        onChange={(event) => {
+                          uploadImagesToCurrentTemplateFolder(Array.from(event.target.files || []));
+                          event.target.value = "";
+                        }}
+                      />
+                    </label>
+                  ) : null}
                   <button
                     type="button"
                     className="image-panel-sort"
@@ -8036,7 +8108,14 @@ export default function App() {
                     <Transformer
                       ref={transformerRef}
                       visible={activeCanvasTool === "move" && !inlineTextEditor && !imageCropEditLayerId}
-                      rotateEnabled={false}
+                      rotateEnabled={selectionHasRotatableImage}
+                      rotateLineVisible={false}
+                      rotateAnchorAngle={180}
+                      rotateAnchorOffset={34}
+                      rotateAnchorCursor="grab"
+                      rotationSnaps={[0, 45, 90, 135, 180, 225, 270, 315]}
+                      rotationSnapTolerance={5}
+                      anchorStyleFunc={styleTransformerAnchor}
                       enabledAnchors={
                         selectionHasShape
                           ? [

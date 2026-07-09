@@ -3796,15 +3796,53 @@ label.disabled {
   margin-bottom: 16px;
 }
 
+.image-panel-upload-icon {
+  order: 3;
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 11px;
+  background: #1B6AE5;
+  color: #ffffff;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, transform 0.12s ease;
+}
+
+.image-panel-upload-icon:hover {
+  background: #1452b7;
+  color: #ffffff;
+}
+
+.image-panel-upload-icon:active {
+  transform: translateY(1px);
+}
+
+.image-panel-upload-icon input[type="file"] {
+  display: none;
+}
+
+.image-panel-upload-icon.disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.panel-head.compact .image-panel-upload-icon {
+  display: none;
+}
+
 .image-panel-tools {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 8px;
   align-items: center;
   margin-bottom: 12px;
 }
 
 .image-panel-search {
+  order: 1;
   min-width: 0;
   height: 42px;
   border: 1px solid #d9e8ff;
@@ -3852,6 +3890,7 @@ label.disabled {
 }
 
 .image-panel-sort {
+  order: 2;
   width: 42px;
   height: 42px;
   border: 0;
@@ -3933,6 +3972,7 @@ label.disabled {
 }
 
 .image-manager-btn {
+  display: none;
   margin-top: 14px;
   cursor: pointer;
 }
