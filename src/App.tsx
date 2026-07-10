@@ -27,10 +27,13 @@ import {
   AlignVerticalJustifyEnd,
   AlignVerticalJustifyStart,
   AlertCircle,
+  ArrowDown,
   ArrowDownUp,
   ArrowLeft,
+  ArrowUp,
   ArrowUpDown,
   BadgeCheck,
+  BringToFront,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -57,6 +60,7 @@ import {
   Rows3,
   Save,
   Search,
+  SendToBack,
   Settings,
   Shapes,
   SlidersHorizontal,
@@ -2289,6 +2293,7 @@ type ShapeLayerNodeProps = {
   layer: TextLayer;
   canDrag: boolean;
   onSelect: (event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
+  onContextMenu: (event: Konva.KonvaEventObject<MouseEvent>) => void;
   onDragStart: (event: Konva.KonvaEventObject<DragEvent>) => void;
   onDragMove: (event: Konva.KonvaEventObject<DragEvent>) => void;
   onDragEnd: (event: Konva.KonvaEventObject<DragEvent>) => void;
@@ -2306,6 +2311,7 @@ function ShapeLayerNode({
   layer,
   canDrag,
   onSelect,
+  onContextMenu,
   onDragStart,
   onDragMove,
   onDragEnd,
@@ -2347,6 +2353,7 @@ function ShapeLayerNode({
     opacity: layer.opacity ?? 1,
     onMouseDown: onSelect,
     onTap: onSelect,
+    onContextMenu,
     onDblClick,
     onDblTap: onDblClick,
     onDragStart: isEditingImageCrop ? onImageCropDragStart : onDragStart,
@@ -2505,6 +2512,11 @@ export default function App() {
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [showPageSizeMenu, setShowPageSizeMenu] = useState(false);
   const [showCornerRadiusPopover, setShowCornerRadiusPopover] = useState(false);
+  const [layerContextMenu, setLayerContextMenu] = useState<{
+    layerId: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const [pageSizeDraft, setPageSizeDraft] = useState({ name: "", width: "", height: "" });
   const [cloudSync, setCloudSync] = useState<CloudSyncState>({
     status: "loading",
@@ -3559,6 +3571,22 @@ export default function App() {
   }, [showPageSizeMenu]);
 
   useEffect(() => {
+    if (!layerContextMenu) return;
+
+    const closeLayerContextMenu = () => setLayerContextMenu(null);
+    const closeLayerContextMenuOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setLayerContextMenu(null);
+    };
+
+    window.addEventListener("pointerdown", closeLayerContextMenu);
+    window.addEventListener("keydown", closeLayerContextMenuOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeLayerContextMenu);
+      window.removeEventListener("keydown", closeLayerContextMenuOnEscape);
+    };
+  }, [layerContextMenu]);
+
+  useEffect(() => {
     if (!isAdmin) return;
 
     function handleAdminActivity() {
@@ -3662,6 +3690,21 @@ export default function App() {
           )
         }));
         setSelectedLayerIds([]);
+        return;
+      }
+
+      if (
+        isControlShortcut &&
+        (event.key === "ArrowUp" || event.key === "ArrowDown") &&
+        selectedIds.length
+      ) {
+        event.preventDefault();
+        const targetLayerId = selectedIds[selectedIds.length - 1];
+        if (event.shiftKey) {
+          moveLayerOrder(targetLayerId, event.key === "ArrowUp" ? "front" : "back");
+        } else {
+          moveLayerOrder(targetLayerId, event.key === "ArrowUp" ? "forward" : "backward");
+        }
         return;
       }
 
@@ -5861,6 +5904,7 @@ export default function App() {
   function beginCanvasSelection(event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
     if (!canEditWorkspace) return;
     if ("button" in event.evt && event.evt.button === 1) return;
+    setLayerContextMenu(null);
     const isStageOrBackground =
       event.target === event.target.getStage() || event.target.name() === "background";
     if (!isStageOrBackground) return;
@@ -5938,6 +5982,7 @@ export default function App() {
     event: Konva.KonvaEventObject<MouseEvent | TouchEvent>
   ) {
     if ("button" in event.evt && event.evt.button === 1) return;
+    setLayerContextMenu(null);
     if (imageCropEditLayerId && imageCropEditLayerId !== layerId) {
       imageCropDragRef.current = null;
       imageCropScaleRef.current = null;
@@ -5961,6 +6006,69 @@ export default function App() {
       return;
     }
     setSelectedLayerIds([layerId]);
+  }
+
+  function openLayerContextMenu(
+    layerId: string,
+    event: Konva.KonvaEventObject<MouseEvent>
+  ) {
+    if (!canEditWorkspace || imageCropEditLayerId) return;
+    event.evt.preventDefault();
+    event.cancelBubble = true;
+    setSelectedLayerIds((current) => (current.includes(layerId) ? current : [layerId]));
+    const stage = stageRef.current;
+    const pointer = stage?.getPointerPosition();
+    if (!pointer) return;
+    setLayerContextMenu({
+      layerId,
+      x: pointer.x,
+      y: pointer.y
+    });
+  }
+
+  function moveLayerOrder(layerId: string, direction: "front" | "forward" | "backward" | "back") {
+    if (!canEditWorkspace) return;
+    updateTemplate((current) => {
+      const index = current.layers.findIndex((layer) => layer.id === layerId);
+      if (index === -1) return current;
+      if (
+        (direction === "front" && index === current.layers.length - 1) ||
+        (direction === "forward" && index === current.layers.length - 1) ||
+        (direction === "backward" && index === 0) ||
+        (direction === "back" && index === 0)
+      ) {
+        return current;
+      }
+      const layers = [...current.layers];
+      const [layer] = layers.splice(index, 1);
+      const nextIndex =
+        direction === "front"
+          ? layers.length
+          : direction === "back"
+            ? 0
+            : direction === "forward"
+              ? Math.min(layers.length, index + 1)
+              : Math.max(0, index - 1);
+      layers.splice(nextIndex, 0, layer);
+      return {
+        ...current,
+        updatedAt: new Date().toISOString(),
+        layers
+      };
+    });
+    setSelectedLayerIds([layerId]);
+    setLayerContextMenu(null);
+    requestAnimationFrame(() => transformerRef.current?.forceUpdate());
+  }
+
+  function deleteLayerFromContextMenu(layerId: string) {
+    setSelectedLayerIds([layerId]);
+    setLayerContextMenu(null);
+    updateTemplate((current) => ({
+      ...current,
+      updatedAt: new Date().toISOString(),
+      layers: current.layers.filter((layer) => layer.id !== layerId)
+    }));
   }
 
   function beginFrameImageCropEdit(
@@ -8733,6 +8841,7 @@ export default function App() {
                             if (node) layerRefs.current[layer.id] = node;
                           }}
                           onSelect={(event) => selectLayerFromCanvas(layer.id, event)}
+                          onContextMenu={(event) => openLayerContextMenu(layer.id, event)}
                           onDragStart={(event) => handleLayerDragStart(layer.id, event)}
                           onDragMove={(event) => handleLayerDragMove(layer.id, event)}
                           onDragEnd={(event) => handleLayerDragEnd(layer.id, event)}
@@ -8764,6 +8873,7 @@ export default function App() {
                           visible={inlineTextEditor?.layerId !== layer.id}
                           onMouseDown={(event) => selectLayerFromCanvas(layer.id, event)}
                           onTap={(event) => selectLayerFromCanvas(layer.id, event)}
+                          onContextMenu={(event) => openLayerContextMenu(layer.id, event)}
                           onDblClick={(event) => beginInlineFreeTextEdit(layer, event)}
                           onDblTap={(event) => beginInlineFreeTextEdit(layer, event)}
                           onDragStart={(event) => handleLayerDragStart(layer.id, event)}
@@ -8903,6 +9013,53 @@ export default function App() {
                     />
                   </Layer>
                   </Stage>
+                  {layerContextMenu ? (
+                    <div
+                      className="layer-context-menu"
+                      style={{
+                        left: Math.max(8, Math.min(layerContextMenu.x + 8, template.width * stageScale - 220)),
+                        top: Math.max(8, Math.min(layerContextMenu.y + 8, template.height * stageScale - 214))
+                      }}
+                      onPointerDown={(event) => event.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => moveLayerOrder(layerContextMenu.layerId, "front")}
+                      >
+                        <BringToFront size={15} />
+                        Đưa lên trên cùng
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => moveLayerOrder(layerContextMenu.layerId, "forward")}
+                      >
+                        <ArrowUp size={15} />
+                        Đưa lên một lớp
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => moveLayerOrder(layerContextMenu.layerId, "backward")}
+                      >
+                        <ArrowDown size={15} />
+                        Đưa xuống một lớp
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => moveLayerOrder(layerContextMenu.layerId, "back")}
+                      >
+                        <SendToBack size={15} />
+                        Đưa xuống dưới cùng
+                      </button>
+                      <button
+                        type="button"
+                        className="danger"
+                        onClick={() => deleteLayerFromContextMenu(layerContextMenu.layerId)}
+                      >
+                        <Trash2 size={15} />
+                        Xóa
+                      </button>
+                    </div>
+                  ) : null}
                   {inlineTextEditor
                     ? (() => {
                         const layer = template.layers.find(
