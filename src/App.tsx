@@ -4829,6 +4829,69 @@ export default function App() {
     setSelectedLayerIds((current) => current.filter((id) => !editableIdSet.has(id)));
   }
 
+  async function saveAdminStateToCloud(
+    nextState: AppState,
+    options: {
+      savingMessage?: string;
+      savedMessage?: string;
+      toastMessage?: string;
+    } = {}
+  ) {
+    if (!remoteSyncEnabledRef.current || !remoteStateReadyRef.current) {
+      setCloudSync({
+        status: "error",
+        message: "Cloud chưa sẵn sàng, hãy tải lại trang trước khi lưu"
+      });
+      showDownloadToast("Cloud chưa sẵn sàng, hãy tải lại trang trước khi lưu");
+      return false;
+    }
+
+    setCloudSync({
+      status: "saving",
+      message: options.savingMessage || "Đang lưu cloud..."
+    });
+    try {
+      const response = await fetch("/api/state", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          state: persistedLibraryState(nextState),
+          baseUpdatedAt: remoteStateUpdatedAtRef.current
+        })
+      });
+      const data = await readJsonResponse(response);
+      if (!response.ok) {
+        if (response.status === 401) {
+          expireAdminSession();
+          return false;
+        }
+        if (response.status === 409) {
+          remoteStateUpdatedAtRef.current =
+            (data as { updatedAt?: string | null } | null)?.updatedAt || remoteStateUpdatedAtRef.current;
+          const message = "Dữ liệu cloud đã thay đổi, hãy tải lại trang trước khi lưu";
+          setCloudSync({ status: "error", message });
+          showDownloadToast(message);
+          return false;
+        }
+        throw new Error(errorMessageFromApi(data, "Không lưu được cloud"));
+      }
+      remoteStateUpdatedAtRef.current =
+        (data as { savedAt?: string | null } | null)?.savedAt || remoteStateUpdatedAtRef.current;
+      setCloudSync({
+        status: "saved",
+        message: options.savedMessage || "Đã lưu cloud"
+      });
+      if (options.toastMessage) showDownloadToast(options.toastMessage);
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Lỗi lưu cloud";
+      setCloudSync({ status: "error", message });
+      showDownloadToast(message);
+      return false;
+    }
+  }
+
   async function loadCloudStateForAdmin() {
     try {
       const response = await fetchCloudState();
@@ -5543,20 +5606,32 @@ export default function App() {
   }
 
   function deletePage(templateId: string) {
-    if (appState.templates.length <= 1) return;
-    const currentIndex = appState.templates.findIndex((item) => item.id === templateId);
-    const remaining = appState.templates.filter((item) => item.id !== templateId);
+    const currentState = appStateRef.current;
+    if (currentState.templates.length <= 1) return;
+    const currentIndex = currentState.templates.findIndex((item) => item.id === templateId);
+    const remaining = currentState.templates.filter((item) => item.id !== templateId);
     const fallbackTemplate =
       remaining[Math.min(Math.max(currentIndex, 0), remaining.length - 1)] || remaining[0];
-
-    setAppState((current) => ({
-      ...current,
-      templates: current.templates.filter((item) => item.id !== templateId),
+    const nextState: AppState = {
+      ...currentState,
+      templates: remaining,
       activeTemplateId:
-        current.activeTemplateId === templateId ? fallbackTemplate.id : current.activeTemplateId
-    }));
+        currentState.activeTemplateId === templateId ? fallbackTemplate.id : currentState.activeTemplateId
+    };
 
-    if (appState.activeTemplateId === templateId) {
+    if (isAdminWorkspace) {
+      skipNextRemoteSaveRef.current = true;
+    }
+    setAppState(nextState);
+    if (isAdminWorkspace) {
+      void saveAdminStateToCloud(nextState, {
+        savingMessage: "Đang xóa thiết kế...",
+        savedMessage: "Đã xóa thiết kế",
+        toastMessage: "Đã xóa thiết kế"
+      });
+    }
+
+    if (currentState.activeTemplateId === templateId) {
       setSelectedLayerIds(fallbackTemplate.layers[0] ? [fallbackTemplate.layers[0].id] : []);
       setZoomLevel(1);
     }
