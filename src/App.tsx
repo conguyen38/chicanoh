@@ -823,8 +823,8 @@ const CORNER_RADIUS_MAX = 240;
 const CORNER_RADIUS_KEYS: Array<{ key: CornerRadiusKey; title: string }> = [
   { key: "topLeft", title: "Góc trên trái" },
   { key: "topRight", title: "Góc trên phải" },
-  { key: "bottomRight", title: "Góc dưới phải" },
-  { key: "bottomLeft", title: "Góc dưới trái" }
+  { key: "bottomLeft", title: "Góc dưới trái" },
+  { key: "bottomRight", title: "Góc dưới phải" }
 ];
 const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 4;
