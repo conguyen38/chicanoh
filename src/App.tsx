@@ -3208,6 +3208,7 @@ export default function App() {
     appState.templates,
     appState.activeTemplateId,
     appState.templateFolders,
+    appState.imageFolders,
     appState.templateImages,
     appState.datasets,
     appState.customFonts,
