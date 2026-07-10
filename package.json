@@ -22,10 +22,18 @@
     "@types/papaparse": "^5.5.2",
     "@types/react": "latest",
     "@types/react-dom": "latest",
-    "@vercel/node": "^5.8.22",
+    "@vercel/node": "^5.8.23",
     "@vitejs/plugin-react": "latest",
     "playwright": "^1.61.1",
     "typescript": "latest",
     "vite": "latest"
+  },
+  "overrides": {
+    "ajv": "^8.20.0",
+    "js-yaml": "^5.2.1",
+    "minimatch": "^10.2.5",
+    "path-to-regexp": "^6.3.0",
+    "smol-toml": "^1.7.0",
+    "undici": "^6.27.0"
   }
 }

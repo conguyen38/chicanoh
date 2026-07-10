@@ -884,6 +884,12 @@ function isAdminSessionValid() {
   return Boolean(lastActivity && Date.now() - lastActivity <= ADMIN_IDLE_TIMEOUT_MS);
 }
 
+function isLocalAdminFallbackAllowed() {
+  if (import.meta.env.DEV) return true;
+  if (typeof window === "undefined") return false;
+  return ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+}
+
 function toFileSlug(value: string) {
   return value
     .normalize("NFD")
@@ -4270,6 +4276,44 @@ export default function App() {
     setSelectedLayerIds([]);
   }
 
+  async function loadCloudStateForAdmin() {
+    try {
+      const response = await fetch("/api/state", { credentials: "include" });
+      const data = await readJsonResponse(response);
+      const isStateResponse =
+        data !== null &&
+        typeof data === "object" &&
+        ("state" in data || "updatedAt" in data);
+      if (!response.ok || !isStateResponse) {
+        throw new Error(errorMessageFromApi(data, "Cannot load cloud state"));
+      }
+
+      remoteSyncEnabledRef.current = true;
+      remoteStateReadyRef.current = true;
+      const remoteState = (data as { state?: AppState | null } | null)?.state;
+      if (remoteState) {
+        const normalized = normalizeAppState(remoteState);
+        skipNextRemoteSaveRef.current = true;
+        setAppStateBase((current) => {
+          const nextState = mergePersistedLibraries(current, normalized);
+          appStateRef.current = nextState;
+          return nextState;
+        });
+      }
+      setCloudSync({
+        status: "saved",
+        message: remoteState ? "Đã tải dữ liệu cloud" : "Cloud đã sẵn sàng"
+      });
+    } catch (error) {
+      remoteSyncEnabledRef.current = false;
+      remoteStateReadyRef.current = true;
+      setCloudSync({
+        status: "error",
+        message: error instanceof Error ? error.message : "Cannot load cloud state"
+      });
+    }
+  }
+
   async function handleAdminUnlock(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setAdminError("");
@@ -4295,6 +4339,7 @@ export default function App() {
         setAdminSettingsName(account);
         setAdminCode("");
         skipNextRemoteSaveRef.current = false;
+        await loadCloudStateForAdmin();
         if (remoteSyncEnabledRef.current) {
           setCloudSync({ status: "ready", message: "Cloud đã sẵn sàng" });
         }
@@ -4304,8 +4349,16 @@ export default function App() {
         setAdminError(errorMessageFromApi(data, "Tai khoan hoac mat khau khong dung"));
         return;
       }
+      if (!isLocalAdminFallbackAllowed()) {
+        setAdminError("Khong the dang nhap admin luc nay");
+        return;
+      }
     } catch {
-      // Fall back to local admin when the Vercel API is not running.
+      if (!isLocalAdminFallbackAllowed()) {
+        setAdminError("Khong the dang nhap admin luc nay");
+        return;
+      }
+      // Fall back to local admin only when the API is not running in local development.
     }
     if (adminLoginName.trim() !== getStoredAdminAccount()) {
       setAdminError("Tài khoản quản trị không đúng");

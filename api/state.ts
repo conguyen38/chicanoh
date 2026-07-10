@@ -11,6 +11,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
+  const session = requireAdmin(req, res);
+  if (!session) return;
+
   try {
     const sql = getSql();
     await ensureTables(sql);
@@ -29,9 +32,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return;
     }
 
-    const session = requireAdmin(req, res);
-    if (!session) return;
-
     const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
     if (!body.state || typeof body.state !== "object") {
       res.status(400).json({ error: "state object is required" });
@@ -46,8 +46,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     `;
     res.status(200).json({ ok: true, savedAt: new Date().toISOString() });
   } catch (error) {
+    console.error("State API failed", error);
     res.status(500).json({
-      error: error instanceof Error ? error.message : "State API failed"
+      error: "State API failed"
     });
   }
 }

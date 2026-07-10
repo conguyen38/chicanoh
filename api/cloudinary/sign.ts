@@ -22,29 +22,33 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
   const session = requireAdmin(req, res);
   if (!session) return;
 
-  const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.VITE_CLOUDINARY_CLOUD_NAME;
-  const apiKey = process.env.CLOUDINARY_API_KEY;
-  const apiSecret = process.env.CLOUDINARY_API_SECRET;
-  if (!cloudName || !apiKey || !apiSecret) {
-    res.status(500).json({ error: "Missing Cloudinary environment variables" });
-    return;
+  try {
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.VITE_CLOUDINARY_CLOUD_NAME;
+    const apiKey = process.env.CLOUDINARY_API_KEY;
+    const apiSecret = process.env.CLOUDINARY_API_SECRET;
+    if (!cloudName || !apiKey || !apiSecret) {
+      throw new Error("Missing Cloudinary environment variables");
+    }
+
+    const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
+    const resourceType = ["image", "raw", "auto"].includes(body.resourceType)
+      ? (body.resourceType as CloudinaryResourceType)
+      : "auto";
+    const folder = process.env.CLOUDINARY_FOLDER || "onehousing-property-maker";
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const params = { folder, timestamp };
+    const signature = signCloudinaryParams(params, apiSecret);
+
+    res.status(200).json({
+      cloudName,
+      apiKey,
+      folder,
+      timestamp,
+      signature,
+      uploadUrl: `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`
+    });
+  } catch (error) {
+    console.error("Cloudinary signing failed", error);
+    res.status(500).json({ error: "Cloudinary signing failed" });
   }
-
-  const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
-  const resourceType = ["image", "raw", "auto"].includes(body.resourceType)
-    ? (body.resourceType as CloudinaryResourceType)
-    : "auto";
-  const folder = process.env.CLOUDINARY_FOLDER || "onehousing-property-maker";
-  const timestamp = Math.floor(Date.now() / 1000).toString();
-  const params = { folder, timestamp };
-  const signature = signCloudinaryParams(params, apiSecret);
-
-  res.status(200).json({
-    cloudName,
-    apiKey,
-    folder,
-    timestamp,
-    signature,
-    uploadUrl: `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`
-  });
 }

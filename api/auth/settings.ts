@@ -40,8 +40,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     await saveAdminConfig(nextConfig, sql);
     res.status(200).json({ ok: true, account: nextConfig.account });
   } catch (error) {
+    console.error("Could not save admin settings", error);
     res.status(500).json({
-      error: error instanceof Error ? error.message : "Could not save admin settings"
+      error: "Could not save admin settings"
     });
   }
 }

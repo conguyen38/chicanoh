@@ -2,7 +2,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 const COOKIE_NAME = "oh_admin_session";
-const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+const SESSION_TTL_SECONDS = 8 * 60 * 60;
 
 type SessionPayload = {
   account: string;
@@ -18,13 +18,12 @@ function base64UrlDecode(value: string) {
 }
 
 function sessionSecret() {
-  return (
-    process.env.SESSION_SECRET ||
-    process.env.ADMIN_SESSION_SECRET ||
-    process.env.NEON_DATABASE_URL ||
-    process.env.POSTGRES_URL ||
-    "local-development-session-secret"
-  );
+  const secret = process.env.SESSION_SECRET || process.env.ADMIN_SESSION_SECRET;
+  if (secret) return secret;
+  if (process.env.VERCEL) {
+    throw new Error("Missing SESSION_SECRET");
+  }
+  return "local-development-session-secret";
 }
 
 function sign(value: string) {
@@ -98,8 +97,9 @@ export function readAdminSession(req: VercelRequest): SessionPayload | null {
   const cookieValue = parseCookies(req.headers.cookie)[COOKIE_NAME];
   if (!cookieValue) return null;
   const [payload, signature] = cookieValue.split(".");
-  if (!payload || !signature || !safeEqual(signature, sign(payload))) return null;
+  if (!payload || !signature) return null;
   try {
+    if (!safeEqual(signature, sign(payload))) return null;
     const parsed = JSON.parse(base64UrlDecode(payload)) as Partial<SessionPayload>;
     if (!parsed.account || !parsed.exp || parsed.exp < Math.floor(Date.now() / 1000)) {
       return null;
