@@ -2541,6 +2541,12 @@ function isEditableTarget(target: EventTarget | null) {
   );
 }
 
+function blurActiveEditableTarget() {
+  if (isEditableTarget(document.activeElement)) {
+    (document.activeElement as HTMLElement).blur();
+  }
+}
+
 export default function App() {
   const initialProjectRoute =
     typeof window !== "undefined" ? getProjectRouteFromPath(window.location.pathname) : null;
@@ -6349,6 +6355,7 @@ export default function App() {
   function beginCanvasSelection(event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
     if (!canEditWorkspace) return;
     if ("button" in event.evt && event.evt.button === 1) return;
+    blurActiveEditableTarget();
     setLayerContextMenu(null);
     const isStageOrBackground =
       event.target === event.target.getStage() || event.target.name() === "background";
@@ -6427,6 +6434,7 @@ export default function App() {
     event: Konva.KonvaEventObject<MouseEvent | TouchEvent>
   ) {
     if ("button" in event.evt && event.evt.button === 1) return;
+    blurActiveEditableTarget();
     setLayerContextMenu(null);
     if (imageCropEditLayerId && imageCropEditLayerId !== layerId) {
       imageCropDragRef.current = null;
