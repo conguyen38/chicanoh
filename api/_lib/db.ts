@@ -45,6 +45,14 @@ export async function ensureTables(sql = getSql()) {
         )
       `;
       await sql`
+        CREATE TABLE IF NOT EXISTS onehousing_app_state_history (
+          version_id bigserial PRIMARY KEY,
+          state_id text NOT NULL,
+          data jsonb NOT NULL,
+          saved_at timestamptz NOT NULL DEFAULT now()
+        )
+      `;
+      await sql`
         CREATE TABLE IF NOT EXISTS onehousing_app_settings (
           key text PRIMARY KEY,
           value jsonb NOT NULL,
