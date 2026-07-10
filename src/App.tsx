@@ -2698,6 +2698,7 @@ export default function App() {
   const lastSessionTouchRef = useRef(0);
   const remoteSyncEnabledRef = useRef(false);
   const remoteStateReadyRef = useRef(false);
+  const hasLoadedRemoteStateRef = useRef(false);
   const skipNextRemoteSaveRef = useRef(false);
   const remoteSaveVersionRef = useRef(0);
   const lastCloudRefreshRef = useRef(0);
@@ -3291,6 +3292,7 @@ export default function App() {
 
     function mergeLocalBackupState(rawState: Partial<AppState> | null) {
       if (!active || !rawState) return;
+      if (hasLoadedRemoteStateRef.current) return;
       const normalized = normalizeAppState(rawState);
       setAppStateBase((current) => {
         const backupTime = latestPersistedLibraryUpdateTime(normalized);
@@ -3333,13 +3335,9 @@ export default function App() {
         remoteStateReadyRef.current = true;
         const remoteState = (data as { state?: AppState | null } | null)?.state;
         if (remoteState) {
+          hasLoadedRemoteStateRef.current = true;
           const normalized = normalizeAppState(remoteState);
           setAppStateBase((current) => {
-            const remoteTime = latestPersistedLibraryUpdateTime(normalized);
-            const localTime = latestPersistedLibraryUpdateTime(current);
-            if (localTime > remoteTime) {
-              return current;
-            }
             skipNextRemoteSaveRef.current = true;
             const nextState = mergePersistedLibraries(current, normalized);
             appStateRef.current = nextState;
@@ -4819,13 +4817,9 @@ export default function App() {
       remoteStateReadyRef.current = true;
       const remoteState = (data as { state?: AppState | null } | null)?.state;
       if (remoteState) {
+        hasLoadedRemoteStateRef.current = true;
         const normalized = normalizeAppState(remoteState);
         setAppStateBase((current) => {
-          const remoteTime = latestPersistedLibraryUpdateTime(normalized);
-          const localTime = latestPersistedLibraryUpdateTime(current);
-          if (localTime > remoteTime) {
-            return current;
-          }
           skipNextRemoteSaveRef.current = true;
           const nextState = mergePersistedLibraries(current, normalized);
           appStateRef.current = nextState;
