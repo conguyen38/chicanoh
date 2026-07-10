@@ -4042,7 +4042,7 @@ export default function App() {
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", resetShortcut);
     };
-  }, [imageCropEditLayerId]);
+  }, [imageCropEditLayerId, isAdminWorkspace, template.id, template.layers]);
 
   function updateTemplate(updater: (template: Template) => Template) {
     if (!isAdminWorkspace) {
@@ -6448,16 +6448,19 @@ export default function App() {
     }
     const nativeEvent = event.evt as MouseEvent;
     if ("shiftKey" in nativeEvent && (nativeEvent.shiftKey || nativeEvent.ctrlKey || nativeEvent.metaKey)) {
-      setSelectedLayerIds((current) =>
-        current.includes(layerId)
+      setSelectedLayerIds((current) => {
+        const next = current.includes(layerId)
           ? current.filter((id) => id !== layerId)
-          : [...current, layerId]
-      );
+          : [...current, layerId];
+        selectedLayerIdsRef.current = next;
+        return next;
+      });
       return;
     }
     if (selectedLayerIds.length > 1 && selectedLayerIds.includes(layerId)) {
       return;
     }
+    selectedLayerIdsRef.current = [layerId];
     setSelectedLayerIds([layerId]);
   }
 
