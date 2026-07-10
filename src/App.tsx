@@ -1043,6 +1043,14 @@ function errorMessageFromApi(data: unknown, fallback: string) {
   return fallback;
 }
 
+function fetchCloudState() {
+  return fetch(`/api/state?_=${Date.now()}`, {
+    credentials: "include",
+    cache: "no-store",
+    headers: { "Cache-Control": "no-cache" }
+  });
+}
+
 async function uploadAssetToCloudinary(file: File, resourceType: CloudinaryResourceType) {
   const signatureResponse = await fetch("/api/cloudinary/sign", {
     method: "POST",
@@ -3125,7 +3133,7 @@ export default function App() {
 
     async function bootstrapCloudState() {
       try {
-        const response = await fetch("/api/state", { credentials: "include" });
+        const response = await fetchCloudState();
         const data = await readJsonResponse(response);
         if (!active) return;
         const isStateResponse =
@@ -4523,7 +4531,7 @@ export default function App() {
 
   async function loadCloudStateForAdmin() {
     try {
-      const response = await fetch("/api/state", { credentials: "include" });
+      const response = await fetchCloudState();
       const data = await readJsonResponse(response);
       const isStateResponse =
         data !== null &&

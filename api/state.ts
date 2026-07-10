@@ -5,8 +5,18 @@ import { ensureTables, getSql } from "./_lib/db.js";
 const STATE_ID = "default";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Surrogate-Control", "no-store");
+
+  if (req.method === "HEAD") {
+    res.status(200).end();
+    return;
+  }
+
   if (req.method !== "GET" && req.method !== "POST" && req.method !== "PUT") {
-    res.setHeader("Allow", "GET, POST, PUT");
+    res.setHeader("Allow", "GET, HEAD, POST, PUT");
     res.status(405).json({ error: "Method not allowed" });
     return;
   }
