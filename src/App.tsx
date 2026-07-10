@@ -914,6 +914,10 @@ function isLocalAdminFallbackAllowed() {
   return ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
 }
 
+function shouldRestoreLocalAdminSession() {
+  return isLocalAdminFallbackAllowed() && isAdminSessionValid();
+}
+
 function toFileSlug(value: string) {
   return value
     .normalize("NFD")
@@ -2554,7 +2558,7 @@ export default function App() {
   const [historyVersion, setHistoryVersion] = useState(0);
   const [selectedRowIndex, setSelectedRowIndex] = useState(0);
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>(["layer_code"]);
-  const [isAdmin, setIsAdmin] = useState(() => isAdminSessionValid());
+  const [isAdmin, setIsAdmin] = useState(() => shouldRestoreLocalAdminSession());
   const isAdminWorkspace = isAdmin && isAdminPath;
   const [editingPageId, setEditingPageId] = useState<string | null>(null);
   const [pagePendingDeleteId, setPagePendingDeleteId] = useState<string | null>(null);
@@ -3366,7 +3370,14 @@ export default function App() {
           authenticated?: boolean;
           account?: string | null;
         } | null;
-        if (!active || !response.ok || !data?.authenticated) return;
+        if (!active || !response.ok) return;
+        if (!data?.authenticated) {
+          if (!isLocalAdminFallbackAllowed()) {
+            clearAdminSession();
+            setIsAdmin(false);
+          }
+          return;
+        }
         touchAdminSession();
         lastSessionTouchRef.current = Date.now();
         setIsAdmin(true);
@@ -3483,6 +3494,10 @@ export default function App() {
         });
         const data = await readJsonResponse(response);
         if (!response.ok) {
+          if (response.status === 401) {
+            expireAdminSession();
+            return;
+          }
           throw new Error(errorMessageFromApi(data, "Không lưu được Neon"));
         }
         if (remoteSaveVersionRef.current === saveVersion) {
@@ -4906,6 +4921,20 @@ export default function App() {
     setAdminAccount(getStoredAdminAccount());
     setAdminLoginName(getStoredAdminAccount());
     setAdminCode("");
+  }
+
+  function expireAdminSession(message = "PhiÃªn admin Ä‘Ã£ háº¿t háº¡n, hÃ£y Ä‘Äƒng nháº­p láº¡i") {
+    clearAdminSession();
+    setIsAdmin(false);
+    setSelectedLayerIds([]);
+    setShowAdminSettingsModal(false);
+    setAdminError(message);
+    remoteSyncEnabledRef.current = false;
+    remoteStateReadyRef.current = false;
+    setCloudSync({
+      status: "error",
+      message
+    });
   }
 
   function logoutAdmin() {
@@ -6932,6 +6961,11 @@ export default function App() {
         });
         const data = await readJsonResponse(response);
         if (!response.ok) {
+          if (response.status === 401) {
+            expireAdminSession();
+            showDownloadToast("Phiên admin đã hết hạn, hãy đăng nhập lại");
+            return;
+          }
           throw new Error(errorMessageFromApi(data, "Không lưu được template"));
         }
         setCloudSync({
