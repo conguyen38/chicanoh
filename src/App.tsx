@@ -189,6 +189,9 @@ type PendingTemplateUpload = {
   width: number;
   height: number;
   file: File;
+  optimizedFile: File;
+  optimizedWidth: number;
+  optimizedHeight: number;
   status: PendingTemplateUploadStatus;
   error?: string;
 };
@@ -929,6 +932,71 @@ function loadHtmlImage(src: string): Promise<HTMLImageElement> {
     image.onerror = reject;
     image.src = src;
   });
+}
+
+const MAX_SERVER_IMAGE_SIDE = 1999;
+const SERVER_IMAGE_MIME_TYPE = "image/webp";
+const SERVER_IMAGE_QUALITY = 0.86;
+
+type OptimizedServerImage = {
+  file: File;
+  width: number;
+  height: number;
+};
+
+function webpFileName(fileName: string) {
+  const baseName = fileName.replace(/\.[^.]+$/, "").trim() || "image";
+  return `${baseName}.webp`;
+}
+
+function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  mimeType: string,
+  quality?: number
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) resolve(blob);
+        else reject(new Error("Cannot optimize image before upload"));
+      },
+      mimeType,
+      quality
+    );
+  });
+}
+
+async function optimizeImageForServerUpload(file: File): Promise<OptimizedServerImage> {
+  const dataUrl = await fileToDataUrl(file);
+  const image = await loadHtmlImage(dataUrl);
+  const sourceWidth = image.naturalWidth || image.width;
+  const sourceHeight = image.naturalHeight || image.height;
+  if (!sourceWidth || !sourceHeight) {
+    throw new Error("Cannot read image dimensions");
+  }
+
+  const scale = Math.min(1, MAX_SERVER_IMAGE_SIDE / Math.max(sourceWidth, sourceHeight));
+  const width = Math.max(1, Math.floor(sourceWidth * scale));
+  const height = Math.max(1, Math.floor(sourceHeight * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Cannot optimize image before upload");
+
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(image, 0, 0, width, height);
+
+  const blob = await canvasToBlob(canvas, SERVER_IMAGE_MIME_TYPE, SERVER_IMAGE_QUALITY);
+  return {
+    file: new File([blob], webpFileName(file.name), {
+      type: SERVER_IMAGE_MIME_TYPE,
+      lastModified: Date.now()
+    }),
+    width,
+    height
+  };
 }
 
 async function readJsonResponse(response: Response) {
@@ -4583,6 +4651,7 @@ export default function App() {
       imageFiles.map(async (file) => {
         const dataUrl = await fileToDataUrl(file);
         const image = await loadHtmlImage(dataUrl);
+        const optimized = await optimizeImageForServerUpload(file);
         return {
           id: uid("upload"),
           name: file.name.replace(/\.[^.]+$/, "") || "Ảnh mẫu mới",
@@ -4590,6 +4659,9 @@ export default function App() {
           width: image.naturalWidth || image.width,
           height: image.naturalHeight || image.height,
           file,
+          optimizedFile: optimized.file,
+          optimizedWidth: optimized.width,
+          optimizedHeight: optimized.height,
           status: "ready" as const
         };
       })
@@ -4623,10 +4695,10 @@ export default function App() {
       let height = upload.height;
       try {
         if (remoteSyncEnabledRef.current) {
-          const uploaded = await uploadAssetToCloudinary(upload.file, "image");
+          const uploaded = await uploadAssetToCloudinary(upload.optimizedFile, "image");
           assetUrl = uploaded.url;
-          width = uploaded.width || width;
-          height = uploaded.height || height;
+          width = uploaded.width || upload.optimizedWidth;
+          height = uploaded.height || upload.optimizedHeight;
         }
         savedImages.push({
           id: uid("image"),
@@ -4675,15 +4747,16 @@ export default function App() {
       for (const file of imageFiles) {
         const dataUrl = await fileToDataUrl(file);
         const image = await loadHtmlImage(dataUrl);
+        const optimized = await optimizeImageForServerUpload(file);
         let assetUrl = dataUrl;
         let width = image.naturalWidth || image.width;
         let height = image.naturalHeight || image.height;
 
         if (remoteSyncEnabledRef.current) {
-          const uploaded = await uploadAssetToCloudinary(file, "image");
+          const uploaded = await uploadAssetToCloudinary(optimized.file, "image");
           assetUrl = uploaded.url;
-          width = uploaded.width || width;
-          height = uploaded.height || height;
+          width = uploaded.width || optimized.width;
+          height = uploaded.height || optimized.height;
         }
 
         savedImages.push({
