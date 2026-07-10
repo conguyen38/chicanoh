@@ -152,6 +152,7 @@ type TextLayer = {
   lineHeight: number;
   letterSpacing: number;
   textTransform: "none" | "uppercase" | "lowercase";
+  createdByClient?: boolean;
 };
 
 type LayerBounds = {
@@ -810,6 +811,9 @@ function CustomSelect({
 
 const STORAGE_KEY = "oh-property-maker-state-v2";
 const WORKSPACE_SESSION_KEY = "oh-property-maker-workspace-session-v1";
+const LOCAL_BACKUP_DB_NAME = "oh-property-maker-local-backup";
+const LOCAL_BACKUP_STORE_NAME = "state";
+const LOCAL_BACKUP_RECORD_KEY = "app";
 const ADMIN_KEY = "oh-property-maker-admin-ok";
 const ADMIN_LAST_ACTIVITY_KEY = "oh-property-maker-admin-last-activity";
 const ADMIN_ACCOUNT_KEY = "oh-property-maker-admin-account";
@@ -1200,6 +1204,10 @@ function isStandaloneImageLayer(layer: TextLayer | null | undefined) {
   if (layer.imageUsage === "frame-fill") return false;
   if (!layer.imageDataUrl) return false;
   return layer.id.startsWith("frame_");
+}
+
+function canEditLayerForMode(layer: TextLayer | null | undefined, isAdminWorkspace: boolean) {
+  return Boolean(layer && (isAdminWorkspace || layer.createdByClient));
 }
 
 function fontInfoFromFileName(fileName: string) {
@@ -1650,6 +1658,22 @@ function flattenTemplateFolders(
     ]);
 }
 
+function getRootTemplateFolderId(
+  folders: TemplateFolder[],
+  folderId: string,
+  fallbackFolderId = DEFAULT_TEMPLATE_FOLDER_ID
+) {
+  const byId = new Map(folders.map((folder) => [folder.id, folder]));
+  let current = byId.get(folderId) || byId.get(fallbackFolderId);
+  const visited = new Set<string>();
+  while (current?.parentId && !visited.has(current.id)) {
+    visited.add(current.id);
+    current = byId.get(current.parentId) || current;
+    if (!current.parentId) break;
+  }
+  return current?.id || fallbackFolderId;
+}
+
 function isBlankTemplate(template: Template | undefined) {
   return Boolean(template && !template.backgroundDataUrl && template.layers.length === 0);
 }
@@ -1891,6 +1915,57 @@ function appStateForLocalBackup(appState: AppState) {
   };
 }
 
+function openLocalBackupDb() {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    if (typeof indexedDB === "undefined") {
+      reject(new Error("IndexedDB is not available"));
+      return;
+    }
+    const request = indexedDB.open(LOCAL_BACKUP_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(LOCAL_BACKUP_STORE_NAME)) {
+        db.createObjectStore(LOCAL_BACKUP_STORE_NAME);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Cannot open local backup"));
+  });
+}
+
+async function loadIndexedDbBackup() {
+  const db = await openLocalBackupDb();
+  return new Promise<Partial<AppState> | null>((resolve, reject) => {
+    const transaction = db.transaction(LOCAL_BACKUP_STORE_NAME, "readonly");
+    const request = transaction.objectStore(LOCAL_BACKUP_STORE_NAME).get(LOCAL_BACKUP_RECORD_KEY);
+    request.onsuccess = () => resolve((request.result as Partial<AppState> | undefined) || null);
+    request.onerror = () => reject(request.error || new Error("Cannot read local backup"));
+    transaction.oncomplete = () => db.close();
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error || new Error("Cannot read local backup"));
+    };
+  });
+}
+
+async function saveIndexedDbBackup(appState: AppState) {
+  const db = await openLocalBackupDb();
+  const libraryState = persistedLibraryState(appState);
+  return new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(LOCAL_BACKUP_STORE_NAME, "readwrite");
+    const request = transaction.objectStore(LOCAL_BACKUP_STORE_NAME).put(libraryState, LOCAL_BACKUP_RECORD_KEY);
+    request.onerror = () => reject(request.error || new Error("Cannot save local backup"));
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error || new Error("Cannot save local backup"));
+    };
+  });
+}
+
 function workspaceStateForSession(appState: AppState) {
   const templates = removeDefaultPlaceholderTemplates(appState.templates);
   return {
@@ -1908,6 +1983,41 @@ function latestTemplateUpdateTime(templates: Partial<Template>[] | undefined) {
     const time = new Date(template.updatedAt || "").getTime();
     return Number.isFinite(time) ? Math.max(latest, time) : latest;
   }, 0);
+}
+
+function latestDateTime(values: Array<string | undefined>) {
+  return values.reduce((latest, value) => {
+    const time = new Date(value || "").getTime();
+    return Number.isFinite(time) ? Math.max(latest, time) : latest;
+  }, 0);
+}
+
+function latestPersistedLibraryUpdateTime(state: Partial<AppState> | null | undefined) {
+  if (!state) return 0;
+  const templateTime = hasMeaningfulTemplates(state.templates)
+    ? latestTemplateUpdateTime(state.templates)
+    : 0;
+  const imageTime = latestDateTime(
+    Array.isArray(state.templateImages)
+      ? state.templateImages.map((image) => image.createdAt)
+      : []
+  );
+  const imageFolderTime = latestDateTime(
+    Array.isArray(state.imageFolders)
+      ? state.imageFolders.map((folder) => folder.createdAt)
+      : []
+  );
+  const folders = Array.isArray(state.templateFolders) ? state.templateFolders : [];
+  const folderTime =
+    folders.length > 1 || (folders[0]?.id && folders[0].id !== DEFAULT_TEMPLATE_FOLDER_ID)
+      ? latestDateTime(folders.map((folder) => folder.createdAt))
+      : 0;
+  const datasetTime = latestDateTime(
+    Array.isArray(state.datasets)
+      ? state.datasets.map((dataset) => dataset.importedAt)
+      : []
+  );
+  return Math.max(templateTime, imageTime, imageFolderTime, folderTime, datasetTime);
 }
 
 function isDefaultPlaceholderTemplate(template: Partial<Template> | null | undefined) {
@@ -1965,7 +2075,8 @@ function loadState() {
       const normalizedSaved = normalizeAppState(parsedSaved);
       nextState = mergePersistedLibraries(nextState, normalizedSaved);
     }
-    const sessionWorkspace = sessionStorage.getItem(WORKSPACE_SESSION_KEY);
+    const isAdminRoute = typeof window !== "undefined" && window.location.pathname.startsWith("/admin");
+    const sessionWorkspace = isAdminRoute ? sessionStorage.getItem(WORKSPACE_SESSION_KEY) : null;
     if (sessionWorkspace) {
       const parsedSession = JSON.parse(sessionWorkspace) as Partial<AppState>;
       if (latestTemplateUpdateTime(parsedSession.templates) >= savedTemplateUpdateTime) {
@@ -2444,6 +2555,7 @@ export default function App() {
   const [selectedRowIndex, setSelectedRowIndex] = useState(0);
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>(["layer_code"]);
   const [isAdmin, setIsAdmin] = useState(() => isAdminSessionValid());
+  const isAdminWorkspace = isAdmin && isAdminPath;
   const [editingPageId, setEditingPageId] = useState<string | null>(null);
   const [pagePendingDeleteId, setPagePendingDeleteId] = useState<string | null>(null);
   const [adminAccount, setAdminAccount] = useState(() => getStoredAdminAccount());
@@ -2462,6 +2574,7 @@ export default function App() {
   const [showTemplateLibraryModal, setShowTemplateLibraryModal] = useState(
     Boolean(initialProjectRoute && initialProjectRoute.kind !== "design-detail")
   );
+  const [clientDraftTemplate, setClientDraftTemplate] = useState<Template | null>(null);
   const [showTemplatePickerModal, setShowTemplatePickerModal] = useState(false);
   const [showFontLibraryModal, setShowFontLibraryModal] = useState(false);
   const [fontLibraryError, setFontLibraryError] = useState("");
@@ -2579,6 +2692,7 @@ export default function App() {
   const appStateRef = useRef(appState);
   const selectedLayerIdsRef = useRef(selectedLayerIds);
   const isAdminRef = useRef(isAdmin);
+  const isAdminWorkspaceRef = useRef(false);
   const undoStackRef = useRef<AppState[]>([]);
   const redoStackRef = useRef<AppState[]>([]);
   const lastSessionTouchRef = useRef(0);
@@ -2586,6 +2700,7 @@ export default function App() {
   const remoteStateReadyRef = useRef(false);
   const skipNextRemoteSaveRef = useRef(false);
   const remoteSaveVersionRef = useRef(0);
+  const lastCloudRefreshRef = useRef(0);
   const downloadToastTimeoutRef = useRef<number | null>(null);
   const canvasPanRef = useRef<{
     x: number;
@@ -2670,15 +2785,34 @@ export default function App() {
     setHistoryVersion((current) => current + 1);
   }
 
-  const template = useMemo(
+  const canonicalTemplate = useMemo(
     () =>
       appState.templates.find((item) => item.id === appState.activeTemplateId) ||
       appState.templates[0],
     [appState.activeTemplateId, appState.templates]
   );
+  const template =
+    !isAdminWorkspace &&
+    !showTemplateLibraryModal &&
+    clientDraftTemplate?.id === canonicalTemplate.id
+      ? clientDraftTemplate
+      : canonicalTemplate;
   const pagePendingDelete = pagePendingDeleteId
     ? appState.templates.find((item) => item.id === pagePendingDeleteId) || null
     : null;
+
+  useEffect(() => {
+    if (isAdminWorkspace || showTemplateLibraryModal) {
+      setClientDraftTemplate(null);
+      return;
+    }
+    setClientDraftTemplate({
+      ...canonicalTemplate,
+      layers: canonicalTemplate.layers.map((layer) => ({ ...layer }))
+    });
+    setImageCropEditLayerId(null);
+    setImageCropPreviewFocus(null);
+  }, [canonicalTemplate.id, isAdminWorkspace, showTemplateLibraryModal]);
 
   useEffect(() => {
     if (!showTemplateLibraryModal) return;
@@ -2748,10 +2882,15 @@ export default function App() {
   const currentTemplateFolderId = appState.templateFolders.some((folder) => folder.id === template.folderId)
     ? template.folderId
     : fallbackTemplateFolderId;
+  const currentTemplateRootFolderId = getRootTemplateFolderId(
+    appState.templateFolders,
+    currentTemplateFolderId,
+    fallbackTemplateFolderId
+  );
   const currentTemplateFolder =
     appState.templateFolders.find((folder) => folder.id === currentTemplateFolderId) ||
     appState.templateFolders[0];
-  const imagePanelFolderId = currentTemplateFolderId;
+  const imagePanelFolderId = currentTemplateRootFolderId;
   const isAllProjectsView = activeTemplateFolderId === fallbackTemplateFolderId;
   const selectedTemplateFolder =
     appState.templateFolders.find((folder) => folder.id === activeTemplateFolderId) ||
@@ -3088,8 +3227,27 @@ export default function App() {
     new Set([...BASE_FONTS, ...appState.customFonts.map((font) => font.family)])
   );
   const canEditWorkspace = true;
-  const isAdminWorkspace = isAdmin && isAdminPath;
   const isAdminProjectManager = isAdmin && projectRouteAdmin && showTemplateLibraryModal;
+  const canEditLayer = (layer: TextLayer | null | undefined) =>
+    canEditWorkspace && canEditLayerForMode(layer, isAdminWorkspace);
+  const canEditLayerById = (layerId: string) =>
+    canEditLayer(template.layers.find((layer) => layer.id === layerId));
+  const canUseShapeControls = (layer: TextLayer | null | undefined) =>
+    canEditLayer(layer) ||
+    (canEditWorkspace && !isAdminWorkspace && isShapeLayer(layer) && !isStandaloneImageLayer(layer));
+  const canUseFrameSlot = (
+    layer: TextLayer | null | undefined
+  ): layer is TextLayer & { kind: "shape" } =>
+    canEditWorkspace &&
+    isShapeLayer(layer) &&
+    layer.shapeVariant === "frame" &&
+    !isStandaloneImageLayer(layer);
+  const canUseFrameSlotById = (layerId: string) =>
+    canUseFrameSlot(template.layers.find((layer) => layer.id === layerId));
+  const selectedLayerCanEdit = canEditLayer(selectedLayer);
+  const selectedLayerCanUseShapeControls = canUseShapeControls(selectedLayer);
+  const selectedLayersCanEdit = Boolean(selectedLayers.length) && selectedLayers.every(canEditLayer);
+  const editableSelectedLayers = selectedLayers.filter(canEditLayer);
   const canAddFreeTextLayer = canEditWorkspace;
   const canAddDataTextLayer = canEditWorkspace && isAdminWorkspace;
   const pendingTemplateUploadSaveCount = pendingTemplateUploads.filter(
@@ -3131,7 +3289,29 @@ export default function App() {
   useEffect(() => {
     let active = true;
 
+    function mergeLocalBackupState(rawState: Partial<AppState> | null) {
+      if (!active || !rawState) return;
+      const normalized = normalizeAppState(rawState);
+      setAppStateBase((current) => {
+        const backupTime = latestPersistedLibraryUpdateTime(normalized);
+        const currentTime = latestPersistedLibraryUpdateTime(current);
+        if (currentTime > backupTime) return current;
+        const nextState = mergePersistedLibraries(current, normalized);
+        appStateRef.current = nextState;
+        return nextState;
+      });
+    }
+
+    async function bootstrapIndexedDbState() {
+      try {
+        mergeLocalBackupState(await loadIndexedDbBackup());
+      } catch {
+        // Local IndexedDB backup is optional.
+      }
+    }
+
     async function bootstrapCloudState() {
+      lastCloudRefreshRef.current = Date.now();
       try {
         const response = await fetchCloudState();
         const data = await readJsonResponse(response);
@@ -3154,8 +3334,13 @@ export default function App() {
         const remoteState = (data as { state?: AppState | null } | null)?.state;
         if (remoteState) {
           const normalized = normalizeAppState(remoteState);
-          skipNextRemoteSaveRef.current = true;
           setAppStateBase((current) => {
+            const remoteTime = latestPersistedLibraryUpdateTime(normalized);
+            const localTime = latestPersistedLibraryUpdateTime(current);
+            if (localTime > remoteTime) {
+              return current;
+            }
+            skipNextRemoteSaveRef.current = true;
             const nextState = mergePersistedLibraries(current, normalized);
             appStateRef.current = nextState;
             return nextState;
@@ -3198,42 +3383,87 @@ export default function App() {
       }
     }
 
+    void bootstrapIndexedDbState();
     bootstrapCloudState();
     restoreAdminSession();
+    const refreshCloudStateIfStale = () => {
+      if (isAdminPath || Date.now() - lastCloudRefreshRef.current < 5000) return;
+      void bootstrapCloudState();
+    };
+    const refreshCloudStateOnVisible = () => {
+      if (document.visibilityState === "visible") refreshCloudStateIfStale();
+    };
+    const refreshLocalBackupFromStorage = (event: StorageEvent) => {
+      if (isAdminPath || event.key !== STORAGE_KEY || !event.newValue) return;
+      try {
+        mergeLocalBackupState(JSON.parse(event.newValue) as Partial<AppState>);
+        void loadIndexedDbBackup().then(mergeLocalBackupState).catch(() => undefined);
+      } catch {
+        // Ignore malformed local backup updates.
+      }
+    };
+    window.addEventListener("focus", refreshCloudStateIfStale);
+    window.addEventListener("storage", refreshLocalBackupFromStorage);
+    document.addEventListener("visibilitychange", refreshCloudStateOnVisible);
     return () => {
       active = false;
+      window.removeEventListener("focus", refreshCloudStateIfStale);
+      window.removeEventListener("storage", refreshLocalBackupFromStorage);
+      document.removeEventListener("visibilitychange", refreshCloudStateOnVisible);
     };
   }, []);
 
   useEffect(() => {
+    if (!isAdminWorkspace) {
+      setStorageWarning("");
+      return;
+    }
     const saveTimer = window.setTimeout(() => {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(appStateForLocalBackup(appState)));
-        setStorageWarning("");
-      } catch {
-        if (remoteSyncEnabledRef.current) {
-          setStorageWarning("");
-          return;
+      void (async () => {
+        let indexedDbSaved = false;
+        try {
+          await saveIndexedDbBackup(appState);
+          indexedDbSaved = true;
+        } catch {
+          if (!remoteSyncEnabledRef.current) {
+            setStorageWarning(
+              "Không lưu được dữ liệu ảnh local vào trình duyệt. Hãy giảm dung lượng ảnh hoặc dùng production để lưu ảnh lên server."
+            );
+          }
         }
-        setStorageWarning(
-          "Không lưu được dữ liệu vào trình duyệt vì dung lượng ảnh quá lớn. Trang mới vẫn dùng được trong phiên hiện tại."
-        );
-      }
+
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(appStateForLocalBackup(appState)));
+          if (indexedDbSaved) setStorageWarning("");
+        } catch {
+          if (remoteSyncEnabledRef.current || indexedDbSaved) {
+            setStorageWarning("");
+            return;
+          }
+          setStorageWarning(
+            "Không lưu được dữ liệu vào trình duyệt vì dung lượng ảnh quá lớn. Trang mới vẫn dùng được trong phiên hiện tại."
+          );
+        }
+      })();
     }, 180);
 
     return () => window.clearTimeout(saveTimer);
-  }, [appState]);
+  }, [appState, isAdminWorkspace]);
 
   useEffect(() => {
     try {
+      if (!isAdminWorkspace) {
+        sessionStorage.removeItem(WORKSPACE_SESSION_KEY);
+        return;
+      }
       sessionStorage.setItem(WORKSPACE_SESSION_KEY, JSON.stringify(workspaceStateForSession(appState)));
     } catch {
       // Workspace is still available in memory for the current render session.
     }
-  }, [appState.templates, appState.activeTemplateId, appState.activeDatasetId]);
+  }, [appState.templates, appState.activeTemplateId, appState.activeDatasetId, isAdminWorkspace]);
 
   useEffect(() => {
-    if (!remoteSyncEnabledRef.current || !remoteStateReadyRef.current || !isAdmin) return;
+    if (!remoteSyncEnabledRef.current || !remoteStateReadyRef.current || !isAdminWorkspace) return;
     if (skipNextRemoteSaveRef.current) {
       skipNextRemoteSaveRef.current = false;
       return;
@@ -3282,7 +3512,7 @@ export default function App() {
     appState.templateImages,
     appState.datasets,
     appState.customFonts,
-    isAdmin
+    isAdminWorkspace
   ]);
 
 
@@ -3493,6 +3723,7 @@ export default function App() {
       return;
     }
     const nodes = selectedLayerIds
+      .filter((id) => canEditLayerById(id))
       .map((id) => layerRefs.current[id])
       .filter(Boolean);
     transformer.nodes(nodes);
@@ -3500,6 +3731,7 @@ export default function App() {
     transformer.getLayer()?.batchDraw();
   }, [
     imageCropEditLayerId,
+    isAdminWorkspace,
     selectedLayerIds,
     template.layers
   ]);
@@ -3524,7 +3756,8 @@ export default function App() {
     appStateRef.current = appState;
     selectedLayerIdsRef.current = selectedLayerIds;
     isAdminRef.current = isAdmin;
-  }, [appState, selectedLayerIds, isAdmin]);
+    isAdminWorkspaceRef.current = isAdminWorkspace;
+  }, [appState, selectedLayerIds, isAdmin, isAdminWorkspace]);
 
   useEffect(
     () => () => {
@@ -3685,19 +3918,26 @@ export default function App() {
       ) {
         event.preventDefault();
         const selectedIdSet = new Set(selectedIds);
-        setAppState((current) => ({
-          ...current,
-          templates: current.templates.map((item) =>
-            item.id === current.activeTemplateId
-              ? {
-                  ...item,
-                  updatedAt: new Date().toISOString(),
-                  layers: item.layers.filter((layer) => !selectedIdSet.has(layer.id))
-                }
-              : item
-          )
-        }));
-        setSelectedLayerIds([]);
+        updateTemplate((current) => {
+          const layers = current.layers.filter(
+            (layer) =>
+              !selectedIdSet.has(layer.id) ||
+              !canEditLayerForMode(layer, isAdminWorkspaceRef.current)
+          );
+          return layers.length === current.layers.length
+            ? current
+            : {
+                ...current,
+                updatedAt: new Date().toISOString(),
+                layers
+              };
+        });
+        setSelectedLayerIds((current) =>
+          current.filter((id) => {
+            const layer = template.layers.find((item) => item.id === id);
+            return layer && !canEditLayerForMode(layer, isAdminWorkspaceRef.current);
+          })
+        );
         return;
       }
 
@@ -3730,26 +3970,27 @@ export default function App() {
       event.preventDefault();
       const step = event.shiftKey ? 10 : 1;
       const selectedIdSet = new Set(selectedIds);
-      setAppState((current) => ({
-        ...current,
-        templates: current.templates.map((item) =>
-          item.id === current.activeTemplateId
-            ? {
-                ...item,
-                updatedAt: new Date().toISOString(),
-                layers: item.layers.map((layer) =>
-                  selectedIdSet.has(layer.id)
-                    ? {
-                        ...layer,
-                        x: Math.round(layer.x + move.x * step),
-                        y: Math.round(layer.y + move.y * step)
-                      }
-                    : layer
-                )
-              }
-            : item
-        )
-      }));
+      updateTemplate((current) => {
+        let didMove = false;
+        const layers = current.layers.map((layer) => {
+          if (!selectedIdSet.has(layer.id) || !canEditLayerForMode(layer, isAdminWorkspaceRef.current)) {
+            return layer;
+          }
+          didMove = true;
+          return {
+            ...layer,
+            x: Math.round(layer.x + move.x * step),
+            y: Math.round(layer.y + move.y * step)
+          };
+        });
+        return didMove
+          ? {
+              ...current,
+              updatedAt: new Date().toISOString(),
+              layers
+            }
+          : current;
+      });
       requestAnimationFrame(() => transformerRef.current?.forceUpdate());
     };
     const handleKeyUp = (event: KeyboardEvent) => {
@@ -3772,6 +4013,13 @@ export default function App() {
   }, [imageCropEditLayerId]);
 
   function updateTemplate(updater: (template: Template) => Template) {
+    if (!isAdminWorkspace) {
+      setClientDraftTemplate((current) => {
+        const baseTemplate = current?.id === template.id ? current : template;
+        return updater(baseTemplate);
+      });
+      return;
+    }
     setAppState((current) => ({
       ...current,
       templates: current.templates.map((item) =>
@@ -3786,13 +4034,17 @@ export default function App() {
       ...current,
       updatedAt: new Date().toISOString(),
       layers: current.layers.map((layer) =>
-        selectedLayerIds.includes(layer.id) ? { ...layer, ...patch } : layer
+        selectedLayerIds.includes(layer.id) &&
+        (canEditLayerForMode(layer, isAdminWorkspace) ||
+          (!isAdminWorkspace && isShapeLayer(layer) && !isStandaloneImageLayer(layer)))
+          ? { ...layer, ...patch }
+          : layer
       )
     }));
   }
 
   function updateSelectedCornerRadiusForAll(nextValue: number) {
-    if (!canEditWorkspace || !selectedLayerIsShape || selectedLayer?.shapeVariant === "circle") return;
+    if (!selectedLayerCanUseShapeControls || !selectedLayerIsShape || selectedLayer?.shapeVariant === "circle") return;
     const radius = clampCornerRadius(nextValue);
     updateSelectedLayer({
       cornerRadius: radius,
@@ -3801,7 +4053,14 @@ export default function App() {
   }
 
   function updateSelectedCornerRadiusCorner(key: CornerRadiusKey, nextValue: number) {
-    if (!canEditWorkspace || !selectedLayer || !selectedLayerIsShape || selectedLayer.shapeVariant === "circle") return;
+    if (
+      !selectedLayerCanUseShapeControls ||
+      !selectedLayer ||
+      !selectedLayerIsShape ||
+      selectedLayer.shapeVariant === "circle"
+    ) {
+      return;
+    }
     const nextRadii = {
       ...getLayerCornerRadii(selectedLayer),
       [key]: clampCornerRadius(nextValue)
@@ -3813,7 +4072,7 @@ export default function App() {
   }
 
   async function resetSelectedImageToOriginalSize() {
-    if (!canEditWorkspace || !selectedLayer || !isStandaloneImageLayer(selectedLayer) || !selectedLayer.imageDataUrl) {
+    if (!selectedLayerCanEdit || !selectedLayer || !isStandaloneImageLayer(selectedLayer) || !selectedLayer.imageDataUrl) {
       return;
     }
 
@@ -3860,10 +4119,11 @@ export default function App() {
       max?: number;
       step?: number;
       pixelsPerStep?: number;
+      enabled?: boolean;
       onChange: (nextValue: number) => void;
     }
   ) {
-    if (!canEditWorkspace || event.button !== 0) return;
+    if (!(options.enabled ?? selectedLayersCanEdit) || event.button !== 0) return;
 
     event.preventDefault();
     event.stopPropagation();
@@ -3915,7 +4175,7 @@ export default function App() {
     layer: TextLayer,
     event: Konva.KonvaEventObject<MouseEvent | TouchEvent>
   ) {
-    if (!canEditWorkspace || typeof layer.content !== "string") return;
+    if (!canEditLayer(layer) || typeof layer.content !== "string") return;
     event.cancelBubble = true;
     setActiveCanvasTool("move");
     setSelectedLayerIds([layer.id]);
@@ -3927,6 +4187,11 @@ export default function App() {
 
   function commitInlineTextEdit(value = inlineTextEditor?.value) {
     if (!inlineTextEditor || typeof value !== "string") return;
+    const editingLayer = template.layers.find((layer) => layer.id === inlineTextEditor.layerId);
+    if (!canEditLayer(editingLayer)) {
+      setInlineTextEditor(null);
+      return;
+    }
     const nextValue = value.trim() ? value : "Text";
     updateTemplate((current) => ({
       ...current,
@@ -3995,9 +4260,9 @@ export default function App() {
   function getMovingLayerIds(activeLayerId: string) {
     const groupDrag = groupDragRef.current;
     if (groupDrag?.activeLayerId === activeLayerId) {
-      return selectedLayerIds.filter((id) => layerRefs.current[id]);
+      return selectedLayerIds.filter((id) => layerRefs.current[id] && canEditLayerById(id));
     }
-    return [activeLayerId];
+    return canEditLayerById(activeLayerId) ? [activeLayerId] : [];
   }
 
   function getAlignmentSnap(movingIds: string[]) {
@@ -4173,7 +4438,9 @@ export default function App() {
       ...current,
       updatedAt: new Date().toISOString(),
       layers: current.layers.map((layer) =>
-        positions[layer.id] ? { ...layer, ...positions[layer.id] } : layer
+        positions[layer.id] && canEditLayerForMode(layer, isAdminWorkspace)
+          ? { ...layer, ...positions[layer.id] }
+          : layer
       )
     }));
   }
@@ -4182,7 +4449,7 @@ export default function App() {
     axis: "horizontal" | "vertical",
     placement: "start" | "center" | "end"
   ) {
-    if (!canEditWorkspace || selectedLayers.length < 2) return;
+    if (!canEditWorkspace || editableSelectedLayers.length < 2 || !selectedLayersCanEdit) return;
     const bounds = getSelectedLayerBounds();
     const group = getBoundsUnion(bounds);
     const byId = new Map(bounds.map((item) => [item.id, item]));
@@ -4215,7 +4482,7 @@ export default function App() {
   }
 
   function distributeSelectedLayers(axis: "horizontal" | "vertical") {
-    if (!canEditWorkspace || selectedLayers.length < 3) return;
+    if (!canEditWorkspace || editableSelectedLayers.length < 3 || !selectedLayersCanEdit) return;
     const bounds = getSelectedLayerBounds();
     const group = getBoundsUnion(bounds);
     const sorted = [...bounds].sort((a, b) =>
@@ -4245,7 +4512,7 @@ export default function App() {
   }
 
   function tidySelectedLayers() {
-    if (!canEditWorkspace || selectedLayers.length < 2) return;
+    if (!canEditWorkspace || editableSelectedLayers.length < 2 || !selectedLayersCanEdit) return;
     const bounds = getSelectedLayerBounds();
     const group = getBoundsUnion(bounds);
     const mainAxis: "horizontal" | "vertical" =
@@ -4304,7 +4571,8 @@ export default function App() {
       align: "left",
       lineHeight: 1.16,
       letterSpacing: 0,
-      textTransform: "none"
+      textTransform: "none",
+      createdByClient: !isAdminWorkspace
     };
     updateTemplate((current) => ({
       ...current,
@@ -4332,7 +4600,8 @@ export default function App() {
       align: "left",
       lineHeight: 1.16,
       letterSpacing: 0,
-      textTransform: "none"
+      textTransform: "none",
+      createdByClient: !isAdminWorkspace
     };
     updateTemplate((current) => ({
       ...current,
@@ -4375,7 +4644,8 @@ export default function App() {
       align: "left",
       lineHeight: 1.16,
       letterSpacing: 0,
-      textTransform: "none"
+      textTransform: "none",
+      createdByClient: !isAdminWorkspace
     };
     updateTemplate((current) => ({
       ...current,
@@ -4394,10 +4664,11 @@ export default function App() {
   ) {
     const dataUrl = getTemplateLibraryImage(image);
     if (!dataUrl || !canEditWorkspace) return;
-    const targetFrame =
+    const targetFrameCandidate =
       (targetLayerId
         ? template.layers.find((layer) => layer.id === targetLayerId && isShapeLayer(layer))
-        : null) || (useSelectedFrame ? selectedLayers.find((layer) => isShapeLayer(layer)) : null);
+        : null) || (useSelectedFrame ? selectedLayers.find((layer) => canUseFrameSlot(layer)) : null);
+    const targetFrame = canUseFrameSlot(targetFrameCandidate) ? targetFrameCandidate : null;
     if (targetFrame) {
       const targetIsStandaloneImage = isStandaloneImageLayer(targetFrame);
       const standaloneSize = targetIsStandaloneImage
@@ -4480,7 +4751,8 @@ export default function App() {
       align: "left",
       lineHeight: 1.16,
       letterSpacing: 0,
-      textTransform: "none"
+      textTransform: "none",
+      createdByClient: !isAdminWorkspace
     };
     updateTemplate((current) => ({
       ...current,
@@ -4521,12 +4793,14 @@ export default function App() {
 
   function removeSelectedLayer() {
     if (!selectedLayerIds.length || !canEditWorkspace) return;
+    const editableIdSet = new Set(editableSelectedLayers.map((layer) => layer.id));
+    if (!editableIdSet.size) return;
     updateTemplate((current) => ({
       ...current,
       updatedAt: new Date().toISOString(),
-      layers: current.layers.filter((layer) => !selectedLayerIds.includes(layer.id))
+      layers: current.layers.filter((layer) => !editableIdSet.has(layer.id))
     }));
-    setSelectedLayerIds([]);
+    setSelectedLayerIds((current) => current.filter((id) => !editableIdSet.has(id)));
   }
 
   async function loadCloudStateForAdmin() {
@@ -4546,8 +4820,13 @@ export default function App() {
       const remoteState = (data as { state?: AppState | null } | null)?.state;
       if (remoteState) {
         const normalized = normalizeAppState(remoteState);
-        skipNextRemoteSaveRef.current = true;
         setAppStateBase((current) => {
+          const remoteTime = latestPersistedLibraryUpdateTime(normalized);
+          const localTime = latestPersistedLibraryUpdateTime(current);
+          if (localTime > remoteTime) {
+            return current;
+          }
+          skipNextRemoteSaveRef.current = true;
           const nextState = mergePersistedLibraries(current, normalized);
           appStateRef.current = nextState;
           return nextState;
@@ -5048,12 +5327,14 @@ export default function App() {
     }
   }
 
-  async function uploadImagesToCurrentTemplateFolder(files: Array<File | undefined | null>) {
-    if (!isAdminWorkspace || isUploadingAsset) return;
+  async function uploadImagesToLibraryFolder(
+    files: Array<File | undefined | null>,
+    targetFolderId: string,
+    targetImageFolderId?: string
+  ) {
+    if (isUploadingAsset) return;
     const imageFiles = files.filter((file): file is File => Boolean(file && file.type.startsWith("image/")));
     if (!imageFiles.length) return;
-    const targetFolderId = currentTemplateFolderId;
-    const targetImageFolderId = activePanelImageFolderId || undefined;
     setIsUploadingAsset(true);
     setTemplateLibraryError("");
 
@@ -5101,10 +5382,23 @@ export default function App() {
     }
   }
 
-  function prepareProjectFolderImages(files: File[]) {
+  async function uploadImagesToCurrentTemplateFolder(files: Array<File | undefined | null>) {
+    if (!isAdminWorkspace) return;
+    await uploadImagesToLibraryFolder(
+      files,
+      currentTemplateFolderId,
+      activePanelImageFolderId || undefined
+    );
+  }
+
+  async function prepareProjectFolderImages(files: File[]) {
     if (!isAdminProjectManager || !activeProjectFolder || projectFolderDetailTab !== "images") return;
     setSelectedTemplateFolderId(activeProjectFolder.id);
-    prepareTemplateUploads(files);
+    await uploadImagesToLibraryFolder(
+      files,
+      activeProjectFolder.id,
+      activeProjectImageFolderId || undefined
+    );
   }
 
   function handleProjectImageDragOver(event: React.DragEvent<HTMLElement>) {
@@ -5119,7 +5413,7 @@ export default function App() {
     const files = Array.from(event.dataTransfer.files || []).filter((file) => file.type.startsWith("image/"));
     if (!files.length) return;
     event.preventDefault();
-    prepareProjectFolderImages(files);
+    void prepareProjectFolderImages(files);
   }
 
   function activatePage(templateId: string, options: { updatePath?: boolean } = {}) {
@@ -5804,7 +6098,7 @@ export default function App() {
     return [...template.layers]
       .reverse()
       .find((layer) => {
-        if (!isShapeLayer(layer)) return false;
+        if (!canUseFrameSlot(layer)) return false;
         const width = layer.width;
         const height = layer.height || layer.width;
         return (
@@ -6020,7 +6314,7 @@ export default function App() {
     layerId: string,
     event: Konva.KonvaEventObject<MouseEvent>
   ) {
-    if (!canEditWorkspace || imageCropEditLayerId) return;
+    if (!canEditWorkspace || imageCropEditLayerId || !canEditLayerById(layerId)) return;
     event.evt.preventDefault();
     event.cancelBubble = true;
     setSelectedLayerIds((current) => (current.includes(layerId) ? current : [layerId]));
@@ -6035,7 +6329,7 @@ export default function App() {
   }
 
   function moveLayerOrder(layerId: string, direction: "front" | "forward" | "backward" | "back") {
-    if (!canEditWorkspace) return;
+    if (!canEditWorkspace || !canEditLayerById(layerId)) return;
     updateTemplate((current) => {
       const index = current.layers.findIndex((layer) => layer.id === layerId);
       if (index === -1) return current;
@@ -6070,6 +6364,7 @@ export default function App() {
   }
 
   function deleteLayerFromContextMenu(layerId: string) {
+    if (!canEditLayerById(layerId)) return;
     setSelectedLayerIds([layerId]);
     setLayerContextMenu(null);
     updateTemplate((current) => ({
@@ -6085,8 +6380,7 @@ export default function App() {
   ) {
     const layer = template.layers.find((item) => item.id === layerId);
     if (
-      !canEditWorkspace ||
-      !isShapeLayer(layer) ||
+      !canUseFrameSlot(layer) ||
       !layer.imageDataUrl ||
       isStandaloneImageLayer(layer)
     ) {
@@ -6105,7 +6399,7 @@ export default function App() {
   }
 
   function handleImageCropDragStart(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
-    if (imageCropEditLayerId !== layerId) return;
+    if (imageCropEditLayerId !== layerId || !canUseFrameSlotById(layerId)) return;
     const layer = template.layers.find((item) => item.id === layerId);
     const pointer = getLogicalPointer();
     if (!isShapeLayer(layer) || !pointer) return;
@@ -6217,7 +6511,7 @@ export default function App() {
   }
 
   function handleImageCropScaleStart(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
-    if (imageCropEditLayerId !== layerId) return;
+    if (imageCropEditLayerId !== layerId || !canUseFrameSlotById(layerId)) return;
     const layer = template.layers.find((item) => item.id === layerId);
     const pointer = getLogicalPointer();
     if (!isShapeLayer(layer) || !pointer) return;
@@ -6299,7 +6593,13 @@ export default function App() {
 
   function handleLayerDragStart(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
     setAlignmentGuides([]);
-    if (!selectedLayerIds.includes(layerId) || selectedLayerIds.length < 2) {
+    if (!canEditLayerById(layerId)) {
+      groupDragRef.current = null;
+      event.target.stopDrag();
+      return;
+    }
+    const movingIds = selectedLayerIds.filter((id) => canEditLayerById(id));
+    if (!movingIds.includes(layerId) || movingIds.length < 2) {
       groupDragRef.current = null;
       return;
     }
@@ -6307,7 +6607,7 @@ export default function App() {
       activeLayerId: layerId,
       startX: event.target.x(),
       startY: event.target.y(),
-      positions: selectedLayerIds.reduce<Record<string, { x: number; y: number }>>(
+      positions: movingIds.reduce<Record<string, { x: number; y: number }>>(
         (positions, id) => {
           const node = layerRefs.current[id];
           if (node) positions[id] = { x: node.x(), y: node.y() };
@@ -6319,11 +6619,12 @@ export default function App() {
   }
 
   function handleLayerDragMove(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
+    if (!canEditLayerById(layerId)) return;
     const groupDrag = groupDragRef.current;
     if (groupDrag && groupDrag.activeLayerId === layerId) {
       const deltaX = event.target.x() - groupDrag.startX;
       const deltaY = event.target.y() - groupDrag.startY;
-      selectedLayerIds.forEach((id) => {
+      selectedLayerIds.filter((id) => canEditLayerById(id)).forEach((id) => {
         if (id === layerId) return;
         const node = layerRefs.current[id];
         const position = groupDrag.positions[id];
@@ -6336,9 +6637,10 @@ export default function App() {
   }
 
   function handleLayerDragEnd(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
+    if (!canEditLayerById(layerId)) return;
     const groupDrag = groupDragRef.current;
     if (groupDrag && groupDrag.activeLayerId === layerId) {
-      const nextPositions = selectedLayerIds.reduce<Record<string, { x: number; y: number }>>(
+      const nextPositions = selectedLayerIds.filter((id) => canEditLayerById(id)).reduce<Record<string, { x: number; y: number }>>(
         (positions, id) => {
           const node = layerRefs.current[id];
           if (node) positions[id] = { x: Math.round(node.x()), y: Math.round(node.y()) };
@@ -6419,6 +6721,7 @@ export default function App() {
 
   function handleLayerTransform(layerId: string, event: Konva.KonvaEventObject<Event>) {
     const layer = template.layers.find((item) => item.id === layerId);
+    if (!canEditLayer(layer)) return;
     const nextSize = normalizeLayerResizeNode(
       event.target as Konva.Text | Konva.Rect | Konva.Image,
       layer
@@ -6437,6 +6740,7 @@ export default function App() {
   function handleLayerTransformEnd(layerId: string, event: Konva.KonvaEventObject<Event>) {
     const node = event.target as Konva.Text | Konva.Rect | Konva.Image;
     const layer = template.layers.find((item) => item.id === layerId);
+    if (!canEditLayer(layer)) return;
     const nextSize = normalizeLayerResizeNode(node, layer);
     if (isShapeLayer(layer) && nextSize.height) {
       updateShapeToolbarPreview(
@@ -6988,7 +7292,7 @@ export default function App() {
                           multiple
                           onClick={() => setSelectedTemplateFolderId(activeProjectFolder.id)}
                           onChange={(event) => {
-                            prepareTemplateUploads(Array.from(event.target.files || []));
+                            void prepareProjectFolderImages(Array.from(event.target.files || []));
                             event.target.value = "";
                           }}
                         />
@@ -8345,7 +8649,7 @@ export default function App() {
                     <div className="toolbar-segmented" aria-label="Horizontal group alignment">
                       <button
                         type="button"
-                        disabled={!canEditWorkspace}
+                        disabled={!selectedLayersCanEdit}
                         onClick={() => alignSelectedLayers("horizontal", "start")}
                         title="Align left"
                       >
@@ -8353,7 +8657,7 @@ export default function App() {
                       </button>
                       <button
                         type="button"
-                        disabled={!canEditWorkspace}
+                        disabled={!selectedLayersCanEdit}
                         onClick={() => alignSelectedLayers("horizontal", "center")}
                         title="Align center"
                       >
@@ -8361,7 +8665,7 @@ export default function App() {
                       </button>
                       <button
                         type="button"
-                        disabled={!canEditWorkspace}
+                        disabled={!selectedLayersCanEdit}
                         onClick={() => alignSelectedLayers("horizontal", "end")}
                         title="Align right"
                       >
@@ -8371,7 +8675,7 @@ export default function App() {
                     <div className="toolbar-segmented" aria-label="Vertical group alignment">
                       <button
                         type="button"
-                        disabled={!canEditWorkspace}
+                        disabled={!selectedLayersCanEdit}
                         onClick={() => alignSelectedLayers("vertical", "start")}
                         title="Align top"
                       >
@@ -8379,7 +8683,7 @@ export default function App() {
                       </button>
                       <button
                         type="button"
-                        disabled={!canEditWorkspace}
+                        disabled={!selectedLayersCanEdit}
                         onClick={() => alignSelectedLayers("vertical", "center")}
                         title="Align middle"
                       >
@@ -8387,7 +8691,7 @@ export default function App() {
                       </button>
                       <button
                         type="button"
-                        disabled={!canEditWorkspace}
+                        disabled={!selectedLayersCanEdit}
                         onClick={() => alignSelectedLayers("vertical", "end")}
                         title="Align bottom"
                       >
@@ -8397,7 +8701,7 @@ export default function App() {
                     <button
                       type="button"
                       className="toolbar-icon-btn"
-                      disabled={!canEditWorkspace || selectedLayers.length < 3}
+                      disabled={!selectedLayersCanEdit || selectedLayers.length < 3}
                       onClick={() => distributeSelectedLayers("horizontal")}
                       title="Distribute horizontally"
                     >
@@ -8406,7 +8710,7 @@ export default function App() {
                     <button
                       type="button"
                       className="toolbar-icon-btn"
-                      disabled={!canEditWorkspace || selectedLayers.length < 3}
+                      disabled={!selectedLayersCanEdit || selectedLayers.length < 3}
                       onClick={() => distributeSelectedLayers("vertical")}
                       title="Distribute vertically"
                     >
@@ -8415,7 +8719,7 @@ export default function App() {
                     <button
                       type="button"
                       className="toolbar-toggle"
-                      disabled={!canEditWorkspace}
+                      disabled={!selectedLayersCanEdit}
                       onClick={tidySelectedLayers}
                       title="Tidy selection"
                     >
@@ -8425,7 +8729,7 @@ export default function App() {
                       type="button"
                       className="toolbar-icon-btn danger"
                       title="Delete selected elements"
-                      disabled={!canEditWorkspace}
+                      disabled={!selectedLayersCanEdit}
                       onClick={removeSelectedLayer}
                     >
                       <Trash2 size={17} />
@@ -8441,7 +8745,7 @@ export default function App() {
                             <button
                               type="button"
                               title="Remove image from frame"
-                              disabled={!canEditWorkspace}
+                              disabled={!selectedLayerCanUseShapeControls}
                               onClick={() =>
                                 updateSelectedLayer({
                                   imageDataUrl: undefined,
@@ -8460,7 +8764,7 @@ export default function App() {
                         <div className="toolbar-color-field compact-color-field" title="Fill">
                           <HexColorInput
                             value={selectedLayer.fill || "#8b3dff"}
-                            disabled={!canEditWorkspace}
+                            disabled={!selectedLayerCanUseShapeControls}
                             onChange={(nextValue) => updateSelectedLayer({ fill: nextValue })}
                           />
                         </div>
@@ -8468,7 +8772,7 @@ export default function App() {
                         <button
                           type="button"
                           className={selectedLayer.strokeWidth ? "toolbar-toggle active" : "toolbar-toggle"}
-                          disabled={!canEditWorkspace}
+                          disabled={!selectedLayerCanUseShapeControls}
                           onClick={() =>
                             updateSelectedLayer({
                               stroke: selectedLayer.stroke || "#ffffff",
@@ -8484,7 +8788,7 @@ export default function App() {
                             <div className="toolbar-color-field compact-color-field stroke-color-field" title="Stroke color">
                               <HexColorInput
                                 value={selectedLayer.stroke || "#ffffff"}
-                                disabled={!canEditWorkspace}
+                                disabled={!selectedLayerCanUseShapeControls}
                                 onChange={(nextValue) => updateSelectedLayer({ stroke: nextValue })}
                               />
                             </div>
@@ -8496,6 +8800,7 @@ export default function App() {
                                     value: selectedLayer.strokeWidth || 1,
                                     min: 1,
                                     max: 40,
+                                    enabled: selectedLayerCanUseShapeControls,
                                     onChange: (nextValue) => updateSelectedLayer({ strokeWidth: nextValue })
                                   })
                                 }
@@ -8507,7 +8812,7 @@ export default function App() {
                                 min={1}
                                 max={40}
                                 value={selectedLayer.strokeWidth}
-                                disabled={!canEditWorkspace}
+                                disabled={!selectedLayerCanUseShapeControls}
                                 onChange={(event) => updateSelectedLayer({ strokeWidth: Number(event.target.value) })}
                               />
                             </label>
@@ -8521,7 +8826,7 @@ export default function App() {
                         type="button"
                         className="toolbar-icon-btn"
                         title="Reset về kích thước gốc"
-                        disabled={!canEditWorkspace || !selectedLayer.imageDataUrl}
+                        disabled={!selectedLayerCanEdit || !selectedLayer.imageDataUrl}
                         onClick={resetSelectedImageToOriginalSize}
                       >
                         <Maximize2 size={16} />
@@ -8534,6 +8839,7 @@ export default function App() {
                           beginToolbarNumberScrub(event, {
                             value: selectedShapeWidth,
                             min: 24,
+                            enabled: selectedLayerCanUseShapeControls,
                             onChange: (nextValue) => updateSelectedLayer({ width: nextValue })
                           })
                         }
@@ -8545,7 +8851,7 @@ export default function App() {
                         type="number"
                         min={24}
                         value={selectedShapeWidth}
-                        disabled={!canEditWorkspace}
+                        disabled={!selectedLayerCanUseShapeControls}
                         onChange={(event) => updateSelectedLayer({ width: Number(event.target.value) })}
                       />
                     </label>
@@ -8556,6 +8862,7 @@ export default function App() {
                           beginToolbarNumberScrub(event, {
                             value: selectedShapeHeight,
                             min: 24,
+                            enabled: selectedLayerCanUseShapeControls,
                             onChange: (nextValue) => updateSelectedLayer({ height: nextValue })
                           })
                         }
@@ -8567,7 +8874,7 @@ export default function App() {
                         type="number"
                         min={24}
                         value={selectedShapeHeight}
-                        disabled={!canEditWorkspace}
+                        disabled={!selectedLayerCanUseShapeControls}
                         onChange={(event) => updateSelectedLayer({ height: Number(event.target.value) })}
                       />
                     </label>
@@ -8578,7 +8885,7 @@ export default function App() {
                           className="toolbar-field-icon corner-radius-menu-btn"
                           title="Chỉnh từng góc"
                           aria-expanded={showCornerRadiusPopover}
-                          disabled={!canEditWorkspace || selectedLayer.shapeVariant === "circle"}
+                          disabled={!selectedLayerCanUseShapeControls || selectedLayer.shapeVariant === "circle"}
                           onClick={() => setShowCornerRadiusPopover((current) => !current)}
                         >
                           <SquareRoundCorner size={15} />
@@ -8590,7 +8897,7 @@ export default function App() {
                           max={CORNER_RADIUS_MAX}
                           placeholder={selectedShapeCornersAreUniform ? undefined : "Mix"}
                           value={selectedShapeCornersAreUniform ? selectedShapeRadius : ""}
-                          disabled={!canEditWorkspace || selectedLayer.shapeVariant === "circle"}
+                          disabled={!selectedLayerCanUseShapeControls || selectedLayer.shapeVariant === "circle"}
                           onChange={(event) => updateSelectedCornerRadiusForAll(Number(event.target.value))}
                         />
                       </div>
@@ -8610,7 +8917,7 @@ export default function App() {
                                   min={0}
                                   max={CORNER_RADIUS_MAX}
                                   value={selectedShapeCornerRadii[corner.key]}
-                                  disabled={!canEditWorkspace}
+                                  disabled={!selectedLayerCanUseShapeControls}
                                   onChange={(event) =>
                                     updateSelectedCornerRadiusCorner(corner.key, Number(event.target.value))
                                   }
@@ -8641,7 +8948,7 @@ export default function App() {
                           min={0}
                           max={100}
                           value={Math.round((selectedLayer.opacity ?? 1) * 100)}
-                          disabled={!canEditWorkspace}
+                          disabled={!selectedLayerCanEdit}
                           onChange={(event) =>
                             updateSelectedLayer({
                               opacity: Math.min(1, Math.max(0, Number(event.target.value) / 100))
@@ -8654,7 +8961,7 @@ export default function App() {
                       type="button"
                       className="toolbar-icon-btn danger"
                       title="Delete element"
-                      disabled={!canEditWorkspace}
+                      disabled={!selectedLayerCanEdit}
                       onClick={removeSelectedLayer}
                     >
                       <Trash2 size={17} />
@@ -8665,7 +8972,7 @@ export default function App() {
                     <div className="toolbar-select font-select">
                       <CustomSelect
                         value={selectedLayer.fontFamily}
-                        disabled={!canEditWorkspace}
+                        disabled={!selectedLayerCanEdit}
                         options={availableFonts.map((font) => ({ value: font, label: font }))}
                         onChange={(nextValue) => {
                           const matchingStyles = appState.customFonts.filter(
@@ -8692,7 +8999,7 @@ export default function App() {
                     <div className="toolbar-select style-select">
                       <CustomSelect
                         value={selectedFontStyleValue}
-                        disabled={!canEditWorkspace}
+                        disabled={!selectedLayerCanEdit}
                         options={selectedFontStyleOptions}
                         onChange={(nextValue) => {
                           const [fontWeight, nextStyle = "normal"] = nextValue.split("|");
@@ -8723,14 +9030,14 @@ export default function App() {
                         min={8}
                         max={220}
                         value={selectedLayer.fontSize}
-                        disabled={!canEditWorkspace}
+                        disabled={!selectedLayerCanEdit}
                         onChange={(event) => updateSelectedLayer({ fontSize: Number(event.target.value) })}
                       />
                     </label>
                     <div className="toolbar-color-field" title="Text color">
                       <HexColorInput
                         value={selectedLayer.color}
-                        disabled={!canEditWorkspace}
+                        disabled={!selectedLayerCanEdit}
                         onChange={(nextValue) => updateSelectedLayer({ color: nextValue })}
                       />
                     </div>
@@ -8740,7 +9047,7 @@ export default function App() {
                           type="button"
                           key={align}
                           className={selectedLayer.align === align ? "active" : ""}
-                          disabled={!canEditWorkspace}
+                          disabled={!selectedLayerCanEdit}
                           onClick={() => updateSelectedLayer({ align })}
                           title={align}
                         >
@@ -8765,7 +9072,7 @@ export default function App() {
                         type="number"
                         min={80}
                         value={Math.round(selectedLayer.width)}
-                        disabled={!canEditWorkspace}
+                        disabled={!selectedLayerCanEdit}
                         onChange={(event) => updateSelectedLayer({ width: Number(event.target.value) })}
                       />
                     </label>
@@ -8773,7 +9080,7 @@ export default function App() {
                       type="button"
                       className="toolbar-icon-btn danger"
                       title="Delete layer"
-                      disabled={!canEditWorkspace}
+                      disabled={!selectedLayerCanEdit}
                       onClick={removeSelectedLayer}
                     >
                       <Trash2 size={17} />
@@ -8843,7 +9150,7 @@ export default function App() {
                         <ShapeLayerNode
                           key={layer.id}
                           layer={layer}
-                          canDrag={canEditWorkspace && activeCanvasTool === "move" && !imageCropEditLayerId}
+                          canDrag={canEditLayer(layer) && activeCanvasTool === "move" && !imageCropEditLayerId}
                           isEditingImageCrop={imageCropEditLayerId === layer.id}
                           setNode={(node) => {
                             if (node) layerRefs.current[layer.id] = node;
@@ -8877,7 +9184,7 @@ export default function App() {
                           align={layer.align}
                           lineHeight={layer.lineHeight}
                           letterSpacing={layer.letterSpacing}
-                          draggable={canEditWorkspace && activeCanvasTool === "move" && !imageCropEditLayerId}
+                          draggable={canEditLayer(layer) && activeCanvasTool === "move" && !imageCropEditLayerId}
                           visible={inlineTextEditor?.layerId !== layer.id}
                           onMouseDown={(event) => selectLayerFromCanvas(layer.id, event)}
                           onTap={(event) => selectLayerFromCanvas(layer.id, event)}
@@ -8926,8 +9233,8 @@ export default function App() {
                             fill="#ffffff"
                             stroke="#0ea5ff"
                             strokeWidth={Math.max(1.5, 2 / stageScale)}
-                            draggable={canEditWorkspace}
-                            listening={canEditWorkspace}
+                            draggable={Boolean(imageCropEditLayer && canUseFrameSlot(imageCropEditLayer))}
+                            listening={Boolean(imageCropEditLayer && canUseFrameSlot(imageCropEditLayer))}
                             onMouseDown={(event) => {
                               event.cancelBubble = true;
                             }}
