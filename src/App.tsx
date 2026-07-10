@@ -4851,7 +4851,7 @@ export default function App() {
       message: options.savingMessage || "Đang lưu cloud..."
     });
     try {
-      const response = await fetch("/api/state", {
+      let response = await fetch("/api/state", {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -4860,13 +4860,43 @@ export default function App() {
           baseUpdatedAt: remoteStateUpdatedAtRef.current
         })
       });
-      const data = await readJsonResponse(response);
+      let data = await readJsonResponse(response);
       if (!response.ok) {
         if (response.status === 401) {
           expireAdminSession();
           return false;
         }
         if (response.status === 409) {
+          remoteStateUpdatedAtRef.current =
+            (data as { updatedAt?: string | null } | null)?.updatedAt || remoteStateUpdatedAtRef.current;
+          await loadCloudStateForAdmin();
+          response = await fetch("/api/state", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              state: persistedLibraryState(nextState),
+              baseUpdatedAt: remoteStateUpdatedAtRef.current
+            })
+          });
+          data = await readJsonResponse(response);
+          if (response.ok) {
+            remoteStateUpdatedAtRef.current =
+              (data as { savedAt?: string | null } | null)?.savedAt || remoteStateUpdatedAtRef.current;
+            setCloudSync({
+              status: "saved",
+              message: options.savedMessage || "Đã lưu cloud"
+            });
+            if (options.toastMessage) showDownloadToast(options.toastMessage);
+            return true;
+          }
+          if (response.status === 401) {
+            expireAdminSession();
+            return false;
+          }
+          if (response.status !== 409) {
+            throw new Error(errorMessageFromApi(data, "Không lưu được cloud"));
+          }
           remoteStateUpdatedAtRef.current =
             (data as { updatedAt?: string | null } | null)?.updatedAt || remoteStateUpdatedAtRef.current;
           const message = "Dữ liệu cloud đã thay đổi, hãy tải lại trang trước khi lưu";
@@ -7037,6 +7067,13 @@ export default function App() {
       }
     }
 
+    await saveAdminStateToCloud(nextState, {
+      savingMessage: "Đang lưu template...",
+      savedMessage: "Đã lưu template",
+      toastMessage: "Đã lưu template để client sử dụng"
+    });
+    return;
+
     if (remoteSyncEnabledRef.current && remoteStateReadyRef.current) {
       setCloudSync({
         status: "saving",
@@ -7077,7 +7114,7 @@ export default function App() {
       } catch (error) {
         setCloudSync({
           status: "error",
-          message: error instanceof Error ? error.message : "Lỗi lưu template"
+          message: error instanceof Error ? (error as Error).message : "Lỗi lưu template"
         });
         showDownloadToast("Không lưu được template lên cloud");
         return;
