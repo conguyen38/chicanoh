@@ -1,5 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import type {
+  CSSProperties,
+  DragEvent as ReactDragEvent,
+  PointerEvent as ReactPointerEvent
+} from "react";
 import { createPortal } from "react-dom";
 import Konva from "konva";
 import {
@@ -174,6 +178,7 @@ type TemplateImage = {
   id: string;
   name: string;
   folderId: string;
+  imageFolderId?: string;
   width: number;
   height: number;
   dataUrl: string;
@@ -203,6 +208,13 @@ type TemplateFolder = {
   createdAt: string;
 };
 
+type ImageFolder = {
+  id: string;
+  name: string;
+  projectFolderId: string;
+  createdAt: string;
+};
+
 type CustomFont = {
   family: string;
   dataUrl: string;
@@ -214,6 +226,7 @@ type CustomFont = {
 
 type AppState = {
   templateFolders: TemplateFolder[];
+  imageFolders: ImageFolder[];
   templateImages: TemplateImage[];
   templates: Template[];
   activeTemplateId: string;
@@ -253,6 +266,7 @@ function getTwoRowPreviewLimit(contentWidth: number, minCardWidth: number, gap: 
 function getProjectRouteFromPath(pathname: string): ProjectRoute | null {
   const segments = pathname.split("/").filter(Boolean).map(decodeURIComponent);
   if (!segments.length) return { admin: false, kind: "home" };
+  if (segments.length === 1 && segments[0] === "admin") return { admin: true, kind: "home" };
   const isAdminProjectRoute = segments[0] === "admin" && segments[1] === "projects";
   const routeStart = isAdminProjectRoute ? 2 : 1;
   if (!isAdminProjectRoute && segments[0] !== "projects") return null;
@@ -275,7 +289,7 @@ function getProjectRootPath(admin = false) {
 }
 
 function getProjectHomePath(admin = false) {
-  return admin ? getProjectRootPath(true) : "/";
+  return admin ? "/admin" : "/";
 }
 
 function getProjectFolderListingPath(admin = false) {
@@ -1509,12 +1523,37 @@ function normalizeTemplateImage(
       typeof image?.folderId === "string" && image.folderId
         ? image.folderId
         : DEFAULT_TEMPLATE_FOLDER_ID,
+    imageFolderId:
+      typeof image?.imageFolderId === "string" && image.imageFolderId
+        ? image.imageFolderId
+        : undefined,
     width: normalizePositiveNumber(image?.width, 1080),
     height: normalizePositiveNumber(image?.height, 1350),
     dataUrl,
     createdAt:
       typeof image?.createdAt === "string" && image.createdAt
         ? image.createdAt
+        : new Date().toISOString()
+  };
+}
+
+function normalizeImageFolder(
+  folder: Partial<ImageFolder> | null | undefined,
+  index = 0
+): ImageFolder {
+  return {
+    id: typeof folder?.id === "string" && folder.id ? folder.id : uid("image_folder"),
+    name:
+      typeof folder?.name === "string" && folder.name.trim()
+        ? folder.name.trim()
+        : `Image folder ${index + 1}`,
+    projectFolderId:
+      typeof folder?.projectFolderId === "string" && folder.projectFolderId
+        ? folder.projectFolderId
+        : DEFAULT_TEMPLATE_FOLDER_ID,
+    createdAt:
+      typeof folder?.createdAt === "string" && folder.createdAt
+        ? folder.createdAt
         : new Date().toISOString()
   };
 }
@@ -1634,6 +1673,7 @@ function createInitialState(): AppState {
         createdAt: new Date().toISOString()
       }
     ],
+    imageFolders: [],
     templateImages: [],
     templates: [template],
     activeTemplateId: template.id,
@@ -1684,7 +1724,14 @@ function normalizeAppState(parsed: Partial<AppState> | null | undefined): AppSta
   const parsedAny = parsed as unknown as {
     templates: Array<Partial<Template> & { libraryDataUrl?: string }>;
     templateImages?: Partial<TemplateImage>[];
+    imageFolders?: Partial<ImageFolder>[];
   };
+  const imageFolders = Array.isArray(parsedAny.imageFolders)
+    ? parsedAny.imageFolders
+        .map((folder, index) => normalizeImageFolder(folder, index))
+        .filter((folder) => folderIds.has(folder.projectFolderId))
+    : [];
+  const imageFolderById = new Map(imageFolders.map((folder) => [folder.id, folder]));
   const migratedImages = parsedAny.templates
     .map((template, index) => {
       const dataUrl = template.libraryDataUrl || "";
@@ -1710,7 +1757,13 @@ function normalizeAppState(parsed: Partial<AppState> | null | undefined): AppSta
     : [];
   const templateImages = [...savedImages, ...migratedImages].map((image) => ({
     ...image,
-    folderId: folderIds.has(image.folderId) ? image.folderId : fallbackFolderId
+    folderId: folderIds.has(image.folderId) ? image.folderId : fallbackFolderId,
+    imageFolderId:
+      image.imageFolderId &&
+      imageFolderById.get(image.imageFolderId)?.projectFolderId ===
+        (folderIds.has(image.folderId) ? image.folderId : fallbackFolderId)
+      ? image.imageFolderId
+      : undefined
   }));
   const templates = removeDefaultPlaceholderTemplates(parsedAny.templates.filter((template) => !template.libraryDataUrl).map((template, index) => {
     const normalizedTemplate = normalizeTemplate(template, index);
@@ -1742,6 +1795,7 @@ function normalizeAppState(parsed: Partial<AppState> | null | undefined): AppSta
   })) : [];
   return {
     templateFolders: normalizedFolders,
+    imageFolders,
     templateImages,
     templates,
     activeTemplateId,
@@ -1762,6 +1816,7 @@ function persistedLibraryState(appState: AppState): AppState {
   return {
     ...initialState,
     templateFolders: appState.templateFolders,
+    imageFolders: appState.imageFolders,
     templateImages: appState.templateImages,
     templates,
     activeTemplateId: templates.some((template) => template.id === appState.activeTemplateId)
@@ -1789,6 +1844,7 @@ function mergePersistedLibraries(workspaceState: AppState, persistedState: AppSt
   return {
     ...workspaceState,
     templateFolders: persistedState.templateFolders,
+    imageFolders: persistedState.imageFolders,
     templateImages: persistedState.templateImages,
     templates,
     activeTemplateId,
@@ -2377,9 +2433,12 @@ export default function App() {
   const [selectedTemplateFolderId, setSelectedTemplateFolderId] = useState(DEFAULT_TEMPLATE_FOLDER_ID);
   const [selectedPickerFolderId, setSelectedPickerFolderId] = useState(DEFAULT_TEMPLATE_FOLDER_ID);
   const [selectedImageFolderId, setSelectedImageFolderId] = useState(DEFAULT_TEMPLATE_FOLDER_ID);
+  const [selectedProjectImageFolderId, setSelectedProjectImageFolderId] = useState("");
+  const [selectedPanelImageFolderId, setSelectedPanelImageFolderId] = useState("");
   const [selectedPickerTemplateId, setSelectedPickerTemplateId] = useState<string | null>(null);
   const [editingTemplateFolderId, setEditingTemplateFolderId] = useState<string | null>(null);
   const [openTemplateFolderMenuId, setOpenTemplateFolderMenuId] = useState<string | null>(null);
+  const [openImageFolderMenuId, setOpenImageFolderMenuId] = useState<string | null>(null);
   const [projectSearch, setProjectSearch] = useState("");
   const [projectFolderId, setProjectFolderId] = useState<string | null>(
     initialProjectRoute?.kind === "folder-detail" ? initialProjectRoute.id : null
@@ -2655,6 +2714,22 @@ export default function App() {
   const activeProjectFolder = projectFolderId
     ? appState.templateFolders.find((folder) => folder.id === projectFolderId) || null
     : null;
+  const activeProjectImageFolders = activeProjectFolder
+    ? appState.imageFolders.filter((folder) => folder.projectFolderId === activeProjectFolder.id)
+    : [];
+  const activeProjectImageFolderId = activeProjectImageFolders.some(
+    (folder) => folder.id === selectedProjectImageFolderId
+  )
+    ? selectedProjectImageFolderId
+    : "";
+  const panelImageFolders = appState.imageFolders.filter(
+    (folder) => folder.projectFolderId === imagePanelFolderId
+  );
+  const activePanelImageFolderId = panelImageFolders.some(
+    (folder) => folder.id === selectedPanelImageFolderId
+  )
+    ? selectedPanelImageFolderId
+    : "";
   const projectFolderChildren = appState.templateFolders.filter(
     (folder) => folder.parentId === (activeProjectFolder ? activeProjectFolder.id : null)
   );
@@ -2704,6 +2779,14 @@ export default function App() {
     if (activeProjectFolder) {
       if (projectFolderDetailTab === "designs" && item.kind !== "design") return false;
       if (projectFolderDetailTab === "images" && item.kind !== "template") return false;
+      if (
+        projectFolderDetailTab === "images" &&
+        activeProjectImageFolderId &&
+        item.kind === "template" &&
+        appState.templateImages.find((image) => image.id === item.id)?.imageFolderId !== activeProjectImageFolderId
+      ) {
+        return false;
+      }
     } else if (item.kind !== "design") {
       return false;
     }
@@ -2813,7 +2896,10 @@ export default function App() {
     (item) => item.folderId === currentTemplateFolderId && getTemplateLibraryImage(item)
   );
   const imagesInActiveFolder = appState.templateImages.filter(
-    (item) => item.folderId === imagePanelFolderId && getTemplateLibraryImage(item)
+    (item) =>
+      item.folderId === imagePanelFolderId &&
+      (!activePanelImageFolderId || item.imageFolderId === activePanelImageFolderId) &&
+      getTemplateLibraryImage(item)
   );
   const imageSearchKeyword = normalizeText(imageSearch);
   const visiblePanelImages = imagesInActiveFolder
@@ -3209,6 +3295,26 @@ export default function App() {
   }, [showProjectAccountMenu]);
 
   useEffect(() => {
+    if (!openImageFolderMenuId) return;
+
+    const closeImageFolderMenuOnOutsideClick = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof HTMLElement && target.closest(".project-image-folder-chip")) return;
+      setOpenImageFolderMenuId(null);
+    };
+    const closeImageFolderMenuOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenImageFolderMenuId(null);
+    };
+
+    document.addEventListener("pointerdown", closeImageFolderMenuOnOutsideClick);
+    document.addEventListener("keydown", closeImageFolderMenuOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeImageFolderMenuOnOutsideClick);
+      document.removeEventListener("keydown", closeImageFolderMenuOnEscape);
+    };
+  }, [openImageFolderMenuId]);
+
+  useEffect(() => {
     if (!isAdminProjectManager || !activeProjectFolder || projectFolderDetailTab !== "images") return;
 
     const handlePasteImages = (event: ClipboardEvent) => {
@@ -3274,11 +3380,26 @@ export default function App() {
     if (!appState.templateFolders.some((folder) => folder.id === selectedImageFolderId)) {
       setSelectedImageFolderId(fallbackFolderId);
     }
+    if (
+      selectedProjectImageFolderId &&
+      !appState.imageFolders.some((folder) => folder.id === selectedProjectImageFolderId)
+    ) {
+      setSelectedProjectImageFolderId("");
+    }
+    if (
+      selectedPanelImageFolderId &&
+      !appState.imageFolders.some((folder) => folder.id === selectedPanelImageFolderId)
+    ) {
+      setSelectedPanelImageFolderId("");
+    }
   }, [
     appState.templateFolders,
+    appState.imageFolders,
     selectedTemplateFolderId,
     selectedPickerFolderId,
-    selectedImageFolderId
+    selectedImageFolderId,
+    selectedProjectImageFolderId,
+    selectedPanelImageFolderId
   ]);
 
   useEffect(() => {
@@ -4642,6 +4763,9 @@ export default function App() {
       return {
         ...current,
         templateFolders: nextFolders,
+        imageFolders: current.imageFolders.filter(
+          (folder) => !folderIdsToDelete.has(folder.projectFolderId)
+        ),
         templateImages: current.templateImages.filter(
           (item) => !folderIdsToDelete.has(item.folderId)
         )
@@ -4738,6 +4862,8 @@ export default function App() {
       return;
     }
     const targetFolderId = activeTemplateFolderId;
+    const targetImageFolderId =
+      activeProjectFolder?.id === targetFolderId ? activeProjectImageFolderId : undefined;
     setIsUploadingAsset(true);
     setTemplateLibraryError("");
     const savedImages: TemplateImage[] = [];
@@ -4758,6 +4884,7 @@ export default function App() {
           id: uid("image"),
           name: upload.name.trim() || "Ảnh mẫu mới",
           folderId: targetFolderId,
+          imageFolderId: targetImageFolderId,
           width,
           height,
           dataUrl: assetUrl,
@@ -4793,6 +4920,7 @@ export default function App() {
     const imageFiles = files.filter((file): file is File => Boolean(file && file.type.startsWith("image/")));
     if (!imageFiles.length) return;
     const targetFolderId = currentTemplateFolderId;
+    const targetImageFolderId = activePanelImageFolderId || undefined;
     setIsUploadingAsset(true);
     setTemplateLibraryError("");
 
@@ -4817,6 +4945,7 @@ export default function App() {
           id: uid("image"),
           name: file.name.replace(/\.[^.]+$/, "") || "Ảnh mới",
           folderId: targetFolderId,
+          imageFolderId: targetImageFolderId,
           width,
           height,
           dataUrl: assetUrl,
@@ -5061,6 +5190,92 @@ export default function App() {
         item.id === imageId ? { ...item, name } : item
       )
     }));
+  }
+
+  function createImageFolder(projectFolderId: string) {
+    if (!isAdmin) return;
+    const name = window.prompt("Tên folder ảnh", "Folder ảnh mới")?.trim();
+    if (!name) return;
+    const nextFolder: ImageFolder = {
+      id: uid("image_folder"),
+      name,
+      projectFolderId,
+      createdAt: new Date().toISOString()
+    };
+    setAppState((current) => ({
+      ...current,
+      imageFolders: [...current.imageFolders, nextFolder]
+    }));
+    setSelectedProjectImageFolderId(nextFolder.id);
+    setSelectedPanelImageFolderId(nextFolder.id);
+    setOpenImageFolderMenuId(null);
+  }
+
+  function renameImageFolder(imageFolderId: string) {
+    if (!isAdmin) return;
+    const folder = appState.imageFolders.find((item) => item.id === imageFolderId);
+    if (!folder) return;
+    const name = window.prompt("Tên folder ảnh", folder.name)?.trim();
+    if (!name) return;
+    setAppState((current) => ({
+      ...current,
+      imageFolders: current.imageFolders.map((item) =>
+        item.id === imageFolderId ? { ...item, name } : item
+      )
+    }));
+    setOpenImageFolderMenuId(null);
+  }
+
+  function deleteImageFolder(imageFolderId: string) {
+    if (!isAdmin) return;
+    const folderName = appState.imageFolders.find((folder) => folder.id === imageFolderId)?.name || "folder này";
+    if (!window.confirm(`Xóa "${folderName}"? Ảnh bên trong sẽ được đưa về Tất cả ảnh.`)) {
+      setOpenImageFolderMenuId(null);
+      return;
+    }
+    setAppState((current) => ({
+      ...current,
+      imageFolders: current.imageFolders.filter((folder) => folder.id !== imageFolderId),
+      templateImages: current.templateImages.map((image) =>
+        image.imageFolderId === imageFolderId ? { ...image, imageFolderId: undefined } : image
+      )
+    }));
+    setSelectedProjectImageFolderId((current) => (current === imageFolderId ? "" : current));
+    setSelectedPanelImageFolderId((current) => (current === imageFolderId ? "" : current));
+    setOpenImageFolderMenuId(null);
+  }
+
+  function moveTemplateImagesToImageFolder(imageIds: string[], imageFolderId: string | undefined) {
+    if (!isAdmin || !imageIds.length) return;
+    const targetFolder = imageFolderId
+      ? appState.imageFolders.find((folder) => folder.id === imageFolderId)
+      : null;
+    const uniqueIds = new Set(imageIds);
+    setAppState((current) => ({
+      ...current,
+      templateImages: current.templateImages.map((image) => {
+        if (!uniqueIds.has(image.id)) return image;
+        if (targetFolder && image.folderId !== targetFolder.projectFolderId) return image;
+        return { ...image, imageFolderId };
+      })
+    }));
+    setSelectedTemplateIds((current) => current.filter((id) => !uniqueIds.has(id)));
+  }
+
+  function imageDragIdsFromEvent(event: ReactDragEvent<HTMLElement>, fallbackId?: string) {
+    const rawIds = event.dataTransfer.getData("application/x-template-image-ids");
+    if (rawIds) {
+      try {
+        const parsed = JSON.parse(rawIds);
+        if (Array.isArray(parsed)) {
+          return parsed.filter((id): id is string => typeof id === "string" && Boolean(id));
+        }
+      } catch {
+        // Ignore malformed drag payloads and use the single-image fallback below.
+      }
+    }
+    const imageId = event.dataTransfer.getData("application/x-template-image-id") || fallbackId || "";
+    return imageId ? [imageId] : [];
   }
 
   function toggleTemplateSelection(templateId: string) {
@@ -6428,6 +6643,15 @@ export default function App() {
                         Tạo thiết kế mới
                       </button>
                     ) : isAdminProjectManager ? (
+                      <div className="project-image-action-group">
+                        <button
+                          type="button"
+                          className="project-secondary-btn"
+                          onClick={() => createImageFolder(activeProjectFolder.id)}
+                        >
+                          <FolderPlus size={17} />
+                          Tạo folder
+                        </button>
                       <label className="project-primary-btn">
                         <ImageUp size={17} />
                         Tải ảnh lên
@@ -6442,6 +6666,7 @@ export default function App() {
                           }}
                         />
                       </label>
+                      </div>
                     ) : (
                       <span />
                     )}
@@ -6495,6 +6720,119 @@ export default function App() {
               </div>
             ) : null}
 
+            {activeProjectFolder && projectFolderDetailTab === "images" ? (
+              <section className="project-image-folder-strip" aria-label="Folder hình ảnh">
+                <button
+                  type="button"
+                  className={
+                    activeProjectImageFolderId
+                      ? "project-image-folder-chip"
+                      : "project-image-folder-chip active"
+                  }
+                  onClick={() => {
+                    setSelectedProjectImageFolderId("");
+                    setOpenImageFolderMenuId(null);
+                  }}
+                  onDragOver={(event) => {
+                    if (!isAdminProjectManager) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                  }}
+                  onDrop={(event) => {
+                    if (!isAdminProjectManager) return;
+                    event.preventDefault();
+                    moveTemplateImagesToImageFolder(imageDragIdsFromEvent(event), undefined);
+                  }}
+                >
+                  <span>Tất cả ảnh</span>
+                  <strong>{activeProjectFolderImageCount}</strong>
+                </button>
+                {activeProjectImageFolders.map((folder) => {
+                  const imageCount = appState.templateImages.filter(
+                    (image) => image.imageFolderId === folder.id
+                  ).length;
+                  return (
+                    <div
+                      key={folder.id}
+                      role="button"
+                      tabIndex={0}
+                      className={
+                        activeProjectImageFolderId === folder.id
+                          ? "project-image-folder-chip active"
+                          : "project-image-folder-chip"
+                      }
+                      onClick={() => {
+                        setSelectedProjectImageFolderId(folder.id);
+                        setOpenImageFolderMenuId(null);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setSelectedProjectImageFolderId(folder.id);
+                          setOpenImageFolderMenuId(null);
+                        }
+                      }}
+                      onDragOver={(event) => {
+                        if (!isAdminProjectManager) return;
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "move";
+                      }}
+                      onDrop={(event) => {
+                        if (!isAdminProjectManager) return;
+                        event.preventDefault();
+                        moveTemplateImagesToImageFolder(imageDragIdsFromEvent(event), folder.id);
+                      }}
+                    >
+                      <span>{folder.name}</span>
+                      <strong>{imageCount}</strong>
+                      {isAdminProjectManager ? (
+                        <span className="project-image-folder-menu-wrap">
+                          <button
+                            type="button"
+                            className="project-image-folder-menu-btn"
+                            title="Tùy chọn folder"
+                            aria-label="Tùy chọn folder ảnh"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setOpenImageFolderMenuId((current) =>
+                                current === folder.id ? null : folder.id
+                              );
+                            }}
+                          >
+                            <MoreHorizontal size={16} />
+                          </button>
+                          {openImageFolderMenuId === folder.id ? (
+                            <span className="project-image-folder-menu">
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  renameImageFolder(folder.id);
+                                }}
+                              >
+                                <Pencil size={15} />
+                                Sửa tên
+                              </button>
+                              <button
+                                type="button"
+                                className="danger"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  deleteImageFolder(folder.id);
+                                }}
+                              >
+                                <Trash2 size={15} />
+                                Xóa
+                              </button>
+                            </span>
+                          ) : null}
+                        </span>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </section>
+            ) : null}
             {showProjectFoldersSection ? (
               <section className="project-section">
                 <div
@@ -6697,6 +7035,17 @@ export default function App() {
                               ? selectedTemplateIds.includes(item.id)
                               : undefined
                           }
+                          draggable={canSelectProjectImages && item.kind === "template"}
+                          onDragStart={(event) => {
+                            if (!canSelectProjectImages || item.kind !== "template") return;
+                            const dragIds = selectedProjectImageIds.includes(item.id)
+                              ? selectedProjectImageIds
+                              : [item.id];
+                            event.dataTransfer.effectAllowed = "move";
+                            event.dataTransfer.setData("application/x-template-image-id", item.id);
+                            event.dataTransfer.setData("application/x-template-image-ids", JSON.stringify(dragIds));
+                            event.dataTransfer.setData("text/plain", item.name);
+                          }}
                           onClick={() => {
                             if (canSelectProjectImages && item.kind === "template") {
                               toggleTemplateSelection(item.id);
@@ -7497,6 +7846,46 @@ export default function App() {
                     </span>
                   </button>
                 </div>
+
+                {(panelImageFolders.length || isAdminWorkspace) ? (
+                  <div className="image-panel-folder-list" aria-label="Folder ảnh">
+                    <button
+                      type="button"
+                      className={
+                        activePanelImageFolderId
+                          ? "image-panel-folder-chip"
+                          : "image-panel-folder-chip active"
+                      }
+                      onClick={() => setSelectedPanelImageFolderId("")}
+                    >
+                      <span>Tất cả</span>
+                    </button>
+                    {panelImageFolders.map((folder) => (
+                      <button
+                        type="button"
+                        key={folder.id}
+                        className={
+                          activePanelImageFolderId === folder.id
+                            ? "image-panel-folder-chip active"
+                            : "image-panel-folder-chip"
+                        }
+                        onClick={() => setSelectedPanelImageFolderId(folder.id)}
+                      >
+                        <span>{folder.name}</span>
+                      </button>
+                    ))}
+                    {isAdminWorkspace ? (
+                      <button
+                        type="button"
+                        className="image-panel-folder-chip create"
+                        onClick={() => createImageFolder(imagePanelFolderId)}
+                      >
+                        <FolderPlus size={16} />
+                        <span>Tạo folder</span>
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 {visiblePanelImages.length ? (
                   <div className="image-library-grid">
