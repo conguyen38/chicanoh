@@ -275,7 +275,7 @@ function getProjectRootPath(admin = false) {
 }
 
 function getProjectHomePath(admin = false) {
-  return getProjectRootPath(admin);
+  return admin ? getProjectRootPath(true) : "/";
 }
 
 function getProjectFolderListingPath(admin = false) {
@@ -2802,9 +2802,6 @@ export default function App() {
   }, [projectFolderDetailPageCount]);
 
   useEffect(() => {
-    if (window.location.pathname === "/") {
-      setBrowserPath(getProjectHomePath(false), true);
-    }
     const handlePopState = () => {
       applyProjectRoute(getProjectRouteFromPath(window.location.pathname));
     };
