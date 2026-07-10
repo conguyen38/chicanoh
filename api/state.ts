@@ -10,6 +10,16 @@ function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+function normalizeTimestamp(value: unknown) {
+  if (!value) return "";
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string") {
+    const time = new Date(value).getTime();
+    return Number.isFinite(time) ? new Date(time).toISOString() : value;
+  }
+  return "";
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   res.setHeader("Pragma", "no-cache");
@@ -42,10 +52,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         FROM onehousing_app_state
         WHERE id = ${STATE_ID}
         LIMIT 1
-      `) as Array<{ data?: unknown; updated_at?: string }>;
+      `) as Array<{ data?: unknown; updated_at?: unknown }>;
       res.status(200).json({
         state: rows[0]?.data || null,
-        updatedAt: rows[0]?.updated_at || null
+        updatedAt: normalizeTimestamp(rows[0]?.updated_at) || null
       });
       return;
     }
@@ -62,9 +72,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       FROM onehousing_app_state
       WHERE id = ${STATE_ID}
       LIMIT 1
-    `) as Array<{ data?: unknown; updated_at?: string }>;
+    `) as Array<{ data?: unknown; updated_at?: unknown }>;
     const existingState = existingRows[0]?.data || null;
-    const existingUpdatedAt = existingRows[0]?.updated_at || "";
+    const existingUpdatedAt = normalizeTimestamp(existingRows[0]?.updated_at);
 
     if (existingUpdatedAt && (!baseUpdatedAt || existingUpdatedAt !== baseUpdatedAt)) {
       res.status(409).json({
@@ -87,8 +97,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ON CONFLICT (id)
       DO UPDATE SET data = EXCLUDED.data, updated_at = now()
       RETURNING updated_at
-    `) as Array<{ updated_at?: string }>;
-    res.status(200).json({ ok: true, savedAt: savedRows[0]?.updated_at || new Date().toISOString() });
+    `) as Array<{ updated_at?: unknown }>;
+    res.status(200).json({
+      ok: true,
+      savedAt: normalizeTimestamp(savedRows[0]?.updated_at) || new Date().toISOString()
+    });
   } catch (error) {
     console.error("State API failed", error);
     res.status(500).json({
