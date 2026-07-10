@@ -2561,10 +2561,6 @@ label.disabled {
   min-height: 0;
 }
 
-.template-picker-modal .template-folder-pane {
-  display: none;
-}
-
 .template-picker-modal .template-folder-content {
   display: flex;
   flex-direction: column;
@@ -2576,6 +2572,39 @@ label.disabled {
   min-height: 0;
   overflow: auto;
   padding-right: 6px;
+  align-content: start;
+  align-items: start;
+  grid-auto-rows: max-content;
+}
+
+.picker-image-folder-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.picker-image-folder-chip {
+  min-height: 32px;
+  max-width: 180px;
+  border: 1px solid #dbeafe;
+  border-radius: 9px;
+  background: #ffffff;
+  color: #334155;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 0 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.picker-image-folder-chip:hover,
+.picker-image-folder-chip.active {
+  border-color: #1B6AE5;
+  background: #e8f1ff;
+  color: #1452b7;
 }
 
 .template-folder-pane,

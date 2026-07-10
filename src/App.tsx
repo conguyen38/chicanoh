@@ -142,6 +142,7 @@ type TextLayer = {
   imageOriginalHeight?: number;
   imageCropFocusX?: number;
   imageCropFocusY?: number;
+  imageCropZoom?: number;
   imageUsage?: ImageUsage;
   align: "left" | "center" | "right";
   lineHeight: number;
@@ -1268,6 +1269,16 @@ function clamp01(value: unknown, fallback = 0.5) {
   return Number.isFinite(nextValue) ? Math.min(1, Math.max(0, nextValue)) : fallback;
 }
 
+const IMAGE_CROP_MIN_ZOOM = 1;
+const IMAGE_CROP_MAX_ZOOM = 4;
+
+function clampImageCropZoom(value: unknown, fallback = IMAGE_CROP_MIN_ZOOM) {
+  const nextValue = Number(value);
+  return Number.isFinite(nextValue)
+    ? Math.min(IMAGE_CROP_MAX_ZOOM, Math.max(IMAGE_CROP_MIN_ZOOM, nextValue))
+    : fallback;
+}
+
 function clampCornerRadius(value: unknown) {
   const nextValue = Number(value);
   return Number.isFinite(nextValue)
@@ -1464,6 +1475,7 @@ function normalizeLayer(layer: Partial<TextLayer> | null | undefined, index = 0)
       : undefined,
     imageCropFocusX: normalizedImageDataUrl ? clamp01(layer?.imageCropFocusX) : undefined,
     imageCropFocusY: normalizedImageDataUrl ? clamp01(layer?.imageCropFocusY) : undefined,
+    imageCropZoom: normalizedImageDataUrl ? clampImageCropZoom(layer?.imageCropZoom) : undefined,
     imageUsage: normalizedImageUsage,
     align: align === "center" || align === "right" || align === "left" ? align : "left",
     lineHeight: normalizePositiveNumber(layer?.lineHeight, FALLBACK_TEXT_LAYER.lineHeight),
@@ -1985,27 +1997,33 @@ function getCoverCrop(
   width: number,
   height: number,
   focusX = 0.5,
-  focusY = 0.5
+  focusY = 0.5,
+  zoom = IMAGE_CROP_MIN_ZOOM
 ) {
   if (!image) return undefined;
   const imageRatio = image.width / image.height;
   const canvasRatio = width / height;
+  const cropZoom = clampImageCropZoom(zoom);
   if (imageRatio > canvasRatio) {
-    const cropWidth = image.height * canvasRatio;
+    const cropWidth = Math.max(1, (image.height * canvasRatio) / cropZoom);
+    const cropHeight = Math.max(1, image.height / cropZoom);
     const maxX = Math.max(0, image.width - cropWidth);
+    const maxY = Math.max(0, image.height - cropHeight);
     return {
       x: maxX * clamp01(focusX),
-      y: 0,
+      y: maxY * clamp01(focusY),
       width: cropWidth,
-      height: image.height
+      height: cropHeight
     };
   }
-  const cropHeight = image.width / canvasRatio;
+  const cropWidth = Math.max(1, image.width / cropZoom);
+  const cropHeight = Math.max(1, (image.width / canvasRatio) / cropZoom);
+  const maxX = Math.max(0, image.width - cropWidth);
   const maxY = Math.max(0, image.height - cropHeight);
   return {
-    x: 0,
+    x: maxX * clamp01(focusX),
     y: maxY * clamp01(focusY),
-    width: image.width,
+    width: cropWidth,
     height: cropHeight
   };
 }
@@ -2015,9 +2033,10 @@ function getCoverImageContentRect(
   width: number,
   height: number,
   focusX = 0.5,
-  focusY = 0.5
+  focusY = 0.5,
+  zoom = IMAGE_CROP_MIN_ZOOM
 ) {
-  const crop = getCoverCrop(image, width, height, focusX, focusY);
+  const crop = getCoverCrop(image, width, height, focusX, focusY, zoom);
   if (!image || !crop) return null;
   const scaleX = width / crop.width;
   const scaleY = height / crop.height;
@@ -2308,7 +2327,14 @@ function ShapeLayerNode({
   const renderedImage = image || framePlaceholderImage;
   const crop =
     renderedImage && layer.imageUsage !== "standalone"
-      ? getCoverCrop(renderedImage, width, height, layer.imageCropFocusX, layer.imageCropFocusY)
+      ? getCoverCrop(
+          renderedImage,
+          width,
+          height,
+          layer.imageCropFocusX,
+          layer.imageCropFocusY,
+          layer.imageCropZoom
+        )
       : undefined;
   const cornerRadius = getShapeCornerRadius(layer, width, height);
   const commonProps = {
@@ -2359,16 +2385,16 @@ function ShapeLayerNode({
 function styleTransformerAnchor(anchor: Konva.Rect) {
   if (!anchor.hasName("rotater")) return;
   anchor.setAttrs({
-    width: 28,
-    height: 28,
-    offsetX: 14,
-    offsetY: 14,
-    cornerRadius: 14,
+    width: 22,
+    height: 22,
+    offsetX: 11,
+    offsetY: 11,
+    cornerRadius: 11,
     fill: "#ffffff",
     stroke: "#cbd5e1",
     strokeWidth: 1,
     shadowColor: "#0f172a",
-    shadowBlur: 10,
+    shadowBlur: 8,
     shadowOpacity: 0.16,
     shadowOffsetY: 2
   });
@@ -2435,6 +2461,7 @@ export default function App() {
   const [selectedImageFolderId, setSelectedImageFolderId] = useState(DEFAULT_TEMPLATE_FOLDER_ID);
   const [selectedProjectImageFolderId, setSelectedProjectImageFolderId] = useState("");
   const [selectedPanelImageFolderId, setSelectedPanelImageFolderId] = useState("");
+  const [selectedPickerImageFolderId, setSelectedPickerImageFolderId] = useState("");
   const [selectedPickerTemplateId, setSelectedPickerTemplateId] = useState<string | null>(null);
   const [editingTemplateFolderId, setEditingTemplateFolderId] = useState<string | null>(null);
   const [openTemplateFolderMenuId, setOpenTemplateFolderMenuId] = useState<string | null>(null);
@@ -2499,6 +2526,7 @@ export default function App() {
     layerId: string;
     x: number;
     y: number;
+    zoom: number;
   } | null>(null);
   const [selectionBox, setSelectionBox] = useState({
     visible: false,
@@ -2562,9 +2590,19 @@ export default function App() {
     startPointer: { x: number; y: number };
     startFocusX: number;
     startFocusY: number;
+    startZoom: number;
     nextFocusX: number;
     nextFocusY: number;
+    nextZoom: number;
     lockedAbsolutePosition: { x: number; y: number };
+  } | null>(null);
+  const imageCropScaleRef = useRef<{
+    layerId: string;
+    startPointer: { x: number; y: number };
+    startZoom: number;
+    nextZoom: number;
+    center: { x: number; y: number };
+    startDistance: number;
   } | null>(null);
 
   function setAppState(updater: AppStateUpdater) {
@@ -2730,6 +2768,14 @@ export default function App() {
   )
     ? selectedPanelImageFolderId
     : "";
+  const pickerImageFolders = appState.imageFolders.filter(
+    (folder) => folder.projectFolderId === activePickerFolderId
+  );
+  const activePickerImageFolderId = pickerImageFolders.some(
+    (folder) => folder.id === selectedPickerImageFolderId
+  )
+    ? selectedPickerImageFolderId
+    : "";
   const projectFolderChildren = appState.templateFolders.filter(
     (folder) => folder.parentId === (activeProjectFolder ? activeProjectFolder.id : null)
   );
@@ -2893,7 +2939,10 @@ export default function App() {
   }, [appState.templates, fallbackTemplateFolderId]);
 
   const templatesInPickerFolder = appState.templateImages.filter(
-    (item) => item.folderId === currentTemplateFolderId && getTemplateLibraryImage(item)
+    (item) =>
+      item.folderId === activePickerFolderId &&
+      (!activePickerImageFolderId || item.imageFolderId === activePickerImageFolderId) &&
+      getTemplateLibraryImage(item)
   );
   const imagesInActiveFolder = appState.templateImages.filter(
     (item) =>
@@ -2959,7 +3008,8 @@ export default function App() {
             imageCropEditLayer.width,
             imageCropEditLayer.height || imageCropEditLayer.width,
             previewFocus?.x ?? imageCropEditLayer.imageCropFocusX,
-            previewFocus?.y ?? imageCropEditLayer.imageCropFocusY
+            previewFocus?.y ?? imageCropEditLayer.imageCropFocusY,
+            previewFocus?.zoom ?? imageCropEditLayer.imageCropZoom
           );
           return rect
             ? {
@@ -3393,14 +3443,25 @@ export default function App() {
     ) {
       setSelectedPanelImageFolderId("");
     }
+    if (
+      selectedPickerImageFolderId &&
+      !appState.imageFolders.some(
+        (folder) =>
+          folder.id === selectedPickerImageFolderId && folder.projectFolderId === activePickerFolderId
+      )
+    ) {
+      setSelectedPickerImageFolderId("");
+    }
   }, [
     appState.templateFolders,
     appState.imageFolders,
+    activePickerFolderId,
     selectedTemplateFolderId,
     selectedPickerFolderId,
     selectedImageFolderId,
     selectedProjectImageFolderId,
-    selectedPanelImageFolderId
+    selectedPanelImageFolderId,
+    selectedPickerImageFolderId
   ]);
 
   useEffect(() => {
@@ -3415,8 +3476,13 @@ export default function App() {
       .map((id) => layerRefs.current[id])
       .filter(Boolean);
     transformer.nodes(nodes);
+    transformer.forceUpdate();
     transformer.getLayer()?.batchDraw();
-  }, [imageCropEditLayerId, selectedLayerIds, template.layers]);
+  }, [
+    imageCropEditLayerId,
+    selectedLayerIds,
+    template.layers
+  ]);
 
   useEffect(() => {
     if (!inlineTextEditor) return;
@@ -3527,12 +3593,24 @@ export default function App() {
       if (event.key === "Escape" && imageCropDragRef.current) {
         event.preventDefault();
         imageCropDragRef.current = null;
+        imageCropScaleRef.current = null;
+        resetCanvasCursor();
+        setImageCropPreviewFocus(null);
+        setImageCropEditLayerId(null);
+        return;
+      }
+      if (event.key === "Escape" && imageCropScaleRef.current) {
+        event.preventDefault();
+        imageCropScaleRef.current = null;
+        resetCanvasCursor();
         setImageCropPreviewFocus(null);
         setImageCropEditLayerId(null);
         return;
       }
       if (event.key === "Escape" && imageCropEditLayerId) {
         event.preventDefault();
+        imageCropScaleRef.current = null;
+        resetCanvasCursor();
         setImageCropPreviewFocus(null);
         setImageCropEditLayerId(null);
         return;
@@ -4293,6 +4371,7 @@ export default function App() {
                 imageOriginalHeight: image.height,
                 imageCropFocusX: 0.5,
                 imageCropFocusY: 0.5,
+                imageCropZoom: 1,
                 imageUsage: targetIsStandaloneImage ? "standalone" : "frame-fill",
                 ...(standaloneSize ? standaloneSize : {}),
                 fill: targetIsStandaloneImage ? "#ffffff" : layer.fill || "#eef7ff",
@@ -4785,11 +4864,13 @@ export default function App() {
     if (!isAdminWorkspace) return;
     setShowTemplatePickerModal(true);
     setSelectedPickerFolderId(currentTemplateFolderId);
+    setSelectedPickerImageFolderId("");
     setSelectedPickerTemplateId(null);
   }
 
   function closeTemplatePickerModal() {
     setShowTemplatePickerModal(false);
+    setSelectedPickerImageFolderId("");
     setSelectedPickerTemplateId(null);
   }
 
@@ -5663,6 +5744,11 @@ export default function App() {
     };
   }
 
+  function resetCanvasCursor() {
+    const stage = stageRef.current;
+    if (stage) stage.container().style.cursor = "";
+  }
+
   function findShapeLayerAtPoint(point: { x: number; y: number }) {
     return [...template.layers]
       .reverse()
@@ -5741,6 +5827,37 @@ export default function App() {
     guideRect.getLayer()?.batchDraw();
   }
 
+  function getImageCropGuideRectForLayer(layer: TextLayer, zoom = layer.imageCropZoom) {
+    if (
+      !isShapeLayer(layer) ||
+      !layer.imageDataUrl ||
+      isStandaloneImageLayer(layer) ||
+      !layer.imageOriginalWidth ||
+      !layer.imageOriginalHeight
+    ) {
+      return null;
+    }
+    const rect = getCoverImageContentRect(
+      {
+        width: layer.imageOriginalWidth,
+        height: layer.imageOriginalHeight
+      },
+      layer.width,
+      layer.height || layer.width,
+      layer.imageCropFocusX,
+      layer.imageCropFocusY,
+      zoom
+    );
+    return rect
+      ? {
+          x: layer.x + rect.x,
+          y: layer.y + rect.y,
+          width: rect.width,
+          height: rect.height
+        }
+      : null;
+  }
+
   function beginCanvasSelection(event: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
     if (!canEditWorkspace) return;
     if ("button" in event.evt && event.evt.button === 1) return;
@@ -5749,6 +5866,8 @@ export default function App() {
     if (!isStageOrBackground) return;
     if (imageCropEditLayerId) {
       imageCropDragRef.current = null;
+      imageCropScaleRef.current = null;
+      resetCanvasCursor();
       setImageCropPreviewFocus(null);
       setImageCropEditLayerId(null);
     }
@@ -5821,6 +5940,8 @@ export default function App() {
     if ("button" in event.evt && event.evt.button === 1) return;
     if (imageCropEditLayerId && imageCropEditLayerId !== layerId) {
       imageCropDragRef.current = null;
+      imageCropScaleRef.current = null;
+      resetCanvasCursor();
       setImageCropPreviewFocus(null);
       setImageCropEditLayerId(null);
     }
@@ -5861,7 +5982,8 @@ export default function App() {
     setImageCropPreviewFocus({
       layerId,
       x: clamp01(layer.imageCropFocusX),
-      y: clamp01(layer.imageCropFocusY)
+      y: clamp01(layer.imageCropFocusY),
+      zoom: clampImageCropZoom(layer.imageCropZoom)
     });
     setImageCropEditLayerId(layerId);
   }
@@ -5879,14 +6001,17 @@ export default function App() {
       startPointer: pointer,
       startFocusX: clamp01(layer.imageCropFocusX),
       startFocusY: clamp01(layer.imageCropFocusY),
+      startZoom: clampImageCropZoom(layer.imageCropZoom),
       nextFocusX: clamp01(layer.imageCropFocusX),
       nextFocusY: clamp01(layer.imageCropFocusY),
+      nextZoom: clampImageCropZoom(layer.imageCropZoom),
       lockedAbsolutePosition
     };
     setImageCropPreviewFocus({
       layerId,
       x: clamp01(layer.imageCropFocusX),
-      y: clamp01(layer.imageCropFocusY)
+      y: clamp01(layer.imageCropFocusY),
+      zoom: clampImageCropZoom(layer.imageCropZoom)
     });
     event.target.position({ x: layer.x, y: layer.y });
   }
@@ -5907,7 +6032,8 @@ export default function App() {
       width,
       height,
       drag.startFocusX,
-      drag.startFocusY
+      drag.startFocusY,
+      drag.startZoom
     );
     if (!startCrop) return;
     const maxCropX = Math.max(0, image.width - startCrop.width);
@@ -5926,13 +6052,14 @@ export default function App() {
     drag.nextFocusY = nextFocusY;
     node.position({ x: layer.x, y: layer.y });
     const imageSize = { width: image.width, height: image.height };
-    node.crop(getCoverCrop(imageSize, width, height, nextFocusX, nextFocusY));
+    node.crop(getCoverCrop(imageSize, width, height, nextFocusX, nextFocusY, drag.startZoom));
     const guideRect = getCoverImageContentRect(
       imageSize,
       width,
       height,
       nextFocusX,
-      nextFocusY
+      nextFocusY,
+      drag.startZoom
     );
     if (guideRect) {
       updateImageCropGuideNodes({
@@ -5965,7 +6092,89 @@ export default function App() {
           ? {
               ...item,
               imageCropFocusX: nextFocusX,
-              imageCropFocusY: nextFocusY
+              imageCropFocusY: nextFocusY,
+              imageCropZoom: Number(drag.nextZoom.toFixed(4))
+            }
+          : item
+      )
+    }));
+  }
+
+  function handleImageCropScaleStart(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
+    if (imageCropEditLayerId !== layerId) return;
+    const layer = template.layers.find((item) => item.id === layerId);
+    const pointer = getLogicalPointer();
+    if (!isShapeLayer(layer) || !pointer) return;
+    const guideRect = getImageCropGuideRectForLayer(layer);
+    if (!guideRect) return;
+    event.cancelBubble = true;
+    const center = {
+      x: guideRect.x + guideRect.width / 2,
+      y: guideRect.y + guideRect.height / 2
+    };
+    const startDistance = Math.max(1, Math.hypot(pointer.x - center.x, pointer.y - center.y));
+    const startZoom = clampImageCropZoom(layer.imageCropZoom);
+    imageCropScaleRef.current = {
+      layerId,
+      startPointer: pointer,
+      startZoom,
+      nextZoom: startZoom,
+      center,
+      startDistance
+    };
+    setImageCropPreviewFocus({
+      layerId,
+      x: clamp01(layer.imageCropFocusX),
+      y: clamp01(layer.imageCropFocusY),
+      zoom: startZoom
+    });
+  }
+
+  function handleImageCropScaleMove(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
+    const scaleDrag = imageCropScaleRef.current;
+    if (!scaleDrag || scaleDrag.layerId !== layerId) return;
+    const layer = template.layers.find((item) => item.id === layerId);
+    const pointer = getLogicalPointer();
+    if (!isShapeLayer(layer) || !pointer) return;
+    event.cancelBubble = true;
+    const distance = Math.max(1, Math.hypot(pointer.x - scaleDrag.center.x, pointer.y - scaleDrag.center.y));
+    const nextZoom = clampImageCropZoom(scaleDrag.startZoom * (distance / scaleDrag.startDistance));
+    scaleDrag.nextZoom = nextZoom;
+    const imageNode = layerRefs.current[layerId];
+    if (imageNode instanceof Konva.Image && layer.imageOriginalWidth && layer.imageOriginalHeight) {
+      const nextCrop = getCoverCrop(
+        { width: layer.imageOriginalWidth, height: layer.imageOriginalHeight },
+        layer.width,
+        layer.height || layer.width,
+        layer.imageCropFocusX,
+        layer.imageCropFocusY,
+        nextZoom
+      );
+      if (nextCrop) imageNode.crop(nextCrop);
+      imageNode.getLayer()?.batchDraw();
+    }
+    const guideRect = getImageCropGuideRectForLayer(layer, nextZoom);
+    if (guideRect) updateImageCropGuideNodes(guideRect);
+  }
+
+  function handleImageCropScaleEnd(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
+    const scaleDrag = imageCropScaleRef.current;
+    const layer = template.layers.find((item) => item.id === layerId);
+    if (!scaleDrag || scaleDrag.layerId !== layerId || !isShapeLayer(layer)) return;
+    event.cancelBubble = true;
+    const nextZoom = Number(scaleDrag.nextZoom.toFixed(4));
+    imageCropScaleRef.current = null;
+    resetCanvasCursor();
+    setImageCropPreviewFocus(null);
+    setImageCropEditLayerId(null);
+    updateTemplate((current) => ({
+      ...current,
+      updatedAt: new Date().toISOString(),
+      layers: current.layers.map((item) =>
+        item.id === layerId
+          ? {
+              ...item,
+              imageCropZoom: nextZoom
             }
           : item
       )
@@ -6066,7 +6275,8 @@ export default function App() {
           node.width(),
           node.height(),
           layer?.imageCropFocusX,
-          layer?.imageCropFocusY
+          layer?.imageCropFocusY,
+          layer?.imageCropZoom
         );
         if (nextCrop) node.crop(nextCrop);
       }
@@ -8122,6 +8332,7 @@ export default function App() {
                                   imageName: undefined,
                                   imageCropFocusX: undefined,
                                   imageCropFocusY: undefined,
+                                  imageCropZoom: undefined,
                                   imageUsage: undefined
                                 })
                               }
@@ -8597,7 +8808,40 @@ export default function App() {
                             fill="#ffffff"
                             stroke="#0ea5ff"
                             strokeWidth={Math.max(1.5, 2 / stageScale)}
-                            listening={false}
+                            draggable={canEditWorkspace}
+                            listening={canEditWorkspace}
+                            onMouseDown={(event) => {
+                              event.cancelBubble = true;
+                            }}
+                            onTap={(event) => {
+                              event.cancelBubble = true;
+                            }}
+                            onMouseEnter={(event) => {
+                              const stage = event.target.getStage();
+                              if (stage) {
+                                stage.container().style.cursor =
+                                  index === 0 || index === 2 ? "nwse-resize" : "nesw-resize";
+                              }
+                            }}
+                            onMouseLeave={(event) => {
+                              const stage = event.target.getStage();
+                              if (stage) stage.container().style.cursor = "";
+                            }}
+                            onDragStart={(event) =>
+                              imageCropEditLayerId
+                                ? handleImageCropScaleStart(imageCropEditLayerId, event)
+                                : undefined
+                            }
+                            onDragMove={(event) =>
+                              imageCropEditLayerId
+                                ? handleImageCropScaleMove(imageCropEditLayerId, event)
+                                : undefined
+                            }
+                            onDragEnd={(event) =>
+                              imageCropEditLayerId
+                                ? handleImageCropScaleEnd(imageCropEditLayerId, event)
+                                : undefined
+                            }
                           />
                         ))}
                       </>
@@ -9505,33 +9749,6 @@ export default function App() {
             <h2>Chọn ảnh</h2>
 
             <div className="template-library-layout template-picker-layout">
-              <aside className="template-folder-pane">
-                <div className="template-folder-head">
-                  <span>Dự án</span>
-                </div>
-                <div className="template-folder-list">
-                  {flattenedTemplateFolders.map((folder) => (
-                    <button
-                      type="button"
-                      key={folder.id}
-                      className={
-                        folder.id === activePickerFolderId
-                          ? "template-folder-row active picker"
-                          : "template-folder-row picker"
-                      }
-                      style={{ paddingLeft: 12 + folder.depth * 16 }}
-                      onClick={() => {
-                        setSelectedPickerFolderId(folder.id);
-                        setSelectedPickerTemplateId(null);
-                      }}
-                    >
-                      <ProjectFolderIcon size="sm" />
-                      <span>{folder.name}</span>
-                    </button>
-                  ))}
-                </div>
-              </aside>
-
               <section className="template-folder-content">
                 <div className="template-current-folder-head">
                   <div>
@@ -9542,6 +9759,41 @@ export default function App() {
                     <p>{templatesInPickerFolder.length} ảnh</p>
                   </div>
                 </div>
+                {pickerImageFolders.length ? (
+                  <div className="picker-image-folder-list" aria-label="Folder ảnh">
+                    <button
+                      type="button"
+                      className={
+                        activePickerImageFolderId
+                          ? "picker-image-folder-chip"
+                          : "picker-image-folder-chip active"
+                      }
+                      onClick={() => {
+                        setSelectedPickerImageFolderId("");
+                        setSelectedPickerTemplateId(null);
+                      }}
+                    >
+                      Tất cả
+                    </button>
+                    {pickerImageFolders.map((folder) => (
+                      <button
+                        type="button"
+                        key={folder.id}
+                        className={
+                          activePickerImageFolderId === folder.id
+                            ? "picker-image-folder-chip active"
+                            : "picker-image-folder-chip"
+                        }
+                        onClick={() => {
+                          setSelectedPickerImageFolderId(folder.id);
+                          setSelectedPickerTemplateId(null);
+                        }}
+                      >
+                        {folder.name}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
 
                 <div className="template-grid">
                   {templatesInPickerFolder.map((item) => (
