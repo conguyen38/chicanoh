@@ -252,6 +252,7 @@ function getTwoRowPreviewLimit(contentWidth: number, minCardWidth: number, gap: 
 
 function getProjectRouteFromPath(pathname: string): ProjectRoute | null {
   const segments = pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  if (!segments.length) return { admin: false, kind: "home" };
   const isAdminProjectRoute = segments[0] === "admin" && segments[1] === "projects";
   const routeStart = isAdminProjectRoute ? 2 : 1;
   if (!isAdminProjectRoute && segments[0] !== "projects") return null;
@@ -2801,6 +2802,9 @@ export default function App() {
   }, [projectFolderDetailPageCount]);
 
   useEffect(() => {
+    if (window.location.pathname === "/") {
+      setBrowserPath(getProjectHomePath(false), true);
+    }
     const handlePopState = () => {
       applyProjectRoute(getProjectRouteFromPath(window.location.pathname));
     };
