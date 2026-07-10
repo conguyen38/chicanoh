@@ -2703,6 +2703,7 @@ export default function App() {
   const remoteSyncEnabledRef = useRef(false);
   const remoteStateReadyRef = useRef(false);
   const hasLoadedRemoteStateRef = useRef(false);
+  const remoteStateUpdatedAtRef = useRef<string | null>(null);
   const skipNextRemoteSaveRef = useRef(false);
   const remoteSaveVersionRef = useRef(0);
   const lastCloudRefreshRef = useRef(0);
@@ -3337,6 +3338,8 @@ export default function App() {
         }
         remoteSyncEnabledRef.current = true;
         remoteStateReadyRef.current = true;
+        remoteStateUpdatedAtRef.current =
+          (data as { updatedAt?: string | null } | null)?.updatedAt || null;
         const remoteState = (data as { state?: AppState | null } | null)?.state;
         if (remoteState) {
           hasLoadedRemoteStateRef.current = true;
@@ -3490,7 +3493,10 @@ export default function App() {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ state: persistedLibraryState(appState) })
+          body: JSON.stringify({
+            state: persistedLibraryState(appState),
+            baseUpdatedAt: remoteStateUpdatedAtRef.current
+          })
         });
         const data = await readJsonResponse(response);
         if (!response.ok) {
@@ -3498,8 +3504,15 @@ export default function App() {
             expireAdminSession();
             return;
           }
+          if (response.status === 409) {
+            remoteStateUpdatedAtRef.current =
+              (data as { updatedAt?: string | null } | null)?.updatedAt || remoteStateUpdatedAtRef.current;
+            throw new Error("Dữ liệu cloud đã thay đổi, hãy tải lại trang trước khi lưu");
+          }
           throw new Error(errorMessageFromApi(data, "Không lưu được Neon"));
         }
+        remoteStateUpdatedAtRef.current =
+          (data as { savedAt?: string | null } | null)?.savedAt || remoteStateUpdatedAtRef.current;
         if (remoteSaveVersionRef.current === saveVersion) {
           setCloudSync({
             status: "saved",
@@ -4830,6 +4843,8 @@ export default function App() {
 
       remoteSyncEnabledRef.current = true;
       remoteStateReadyRef.current = true;
+      remoteStateUpdatedAtRef.current =
+        (data as { updatedAt?: string | null } | null)?.updatedAt || null;
       const remoteState = (data as { state?: AppState | null } | null)?.state;
       if (remoteState) {
         hasLoadedRemoteStateRef.current = true;
@@ -6957,7 +6972,10 @@ export default function App() {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ state: persistedLibraryState(nextState) })
+          body: JSON.stringify({
+            state: persistedLibraryState(nextState),
+            baseUpdatedAt: remoteStateUpdatedAtRef.current
+          })
         });
         const data = await readJsonResponse(response);
         if (!response.ok) {
@@ -6966,8 +6984,15 @@ export default function App() {
             showDownloadToast("Phiên admin đã hết hạn, hãy đăng nhập lại");
             return;
           }
+          if (response.status === 409) {
+            remoteStateUpdatedAtRef.current =
+              (data as { updatedAt?: string | null } | null)?.updatedAt || remoteStateUpdatedAtRef.current;
+            throw new Error("Dữ liệu cloud đã thay đổi, hãy tải lại trang trước khi lưu");
+          }
           throw new Error(errorMessageFromApi(data, "Không lưu được template"));
         }
+        remoteStateUpdatedAtRef.current =
+          (data as { savedAt?: string | null } | null)?.savedAt || remoteStateUpdatedAtRef.current;
         setCloudSync({
           status: "saved",
           message: "Đã lưu template"
