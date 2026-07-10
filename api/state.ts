@@ -11,8 +11,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const session = requireAdmin(req, res);
-  if (!session) return;
+  if (req.method !== "GET") {
+    const session = requireAdmin(req, res);
+    if (!session) return;
+  }
 
   try {
     const sql = getSql();
