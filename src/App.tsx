@@ -3253,7 +3253,7 @@ export default function App() {
   );
   const canEditWorkspace = true;
   const isAdminProjectManager = isAdmin && projectRouteAdmin && showTemplateLibraryModal;
-  const isAdminProjectCloudLoading = isAdminProjectManager && cloudSync.status === "loading";
+  const isProjectCloudLoading = showTemplateLibraryModal && cloudSync.status === "loading";
   const canEditLayer = (layer: TextLayer | null | undefined) =>
     canEditWorkspace && canEditLayerForMode(layer, isAdminWorkspace);
   const canEditLayerById = (layerId: string) =>
@@ -7541,7 +7541,7 @@ export default function App() {
               </div>
             ) : null}
 
-            {isAdminProjectCloudLoading ? (
+            {isProjectCloudLoading ? (
               <div className="project-empty-state project-loading-state">
                 <LoaderCircle size={34} />
                 <strong>Đang tải dữ liệu cloud</strong>
