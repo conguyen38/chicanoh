@@ -5969,6 +5969,11 @@ label.disabled {
   font-size: 16px;
 }
 
+.project-loading-state svg {
+  color: #1B6AE5;
+  animation: spin 0.85s linear infinite;
+}
+
 .project-floating-delete {
   position: fixed;
   left: 50%;

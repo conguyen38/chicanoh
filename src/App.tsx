@@ -3253,6 +3253,7 @@ export default function App() {
   );
   const canEditWorkspace = true;
   const isAdminProjectManager = isAdmin && projectRouteAdmin && showTemplateLibraryModal;
+  const isAdminProjectCloudLoading = isAdminProjectManager && cloudSync.status === "loading";
   const canEditLayer = (layer: TextLayer | null | undefined) =>
     canEditWorkspace && canEditLayerForMode(layer, isAdminWorkspace);
   const canEditLayerById = (layerId: string) =>
@@ -7540,6 +7541,14 @@ export default function App() {
               </div>
             ) : null}
 
+            {isAdminProjectCloudLoading ? (
+              <div className="project-empty-state project-loading-state">
+                <LoaderCircle size={34} />
+                <strong>Đang tải dữ liệu cloud</strong>
+                <span>Danh sách dự án và thiết kế sẽ hiện khi dữ liệu mới nhất sẵn sàng.</span>
+              </div>
+            ) : (
+              <>
             {activeProjectFolder && projectFolderDetailTab === "images" ? (
               <section className="project-image-folder-strip" aria-label="Folder hình ảnh">
                 <button
@@ -8036,6 +8045,8 @@ export default function App() {
                 ) : null}
             </section>
             ) : null}
+              </>
+            )}
           </section>
         </main>
 
