@@ -1686,6 +1686,19 @@ function getTemplateLibraryImage(item: TemplateImage | Template) {
   return "dataUrl" in item ? item.dataUrl : item.backgroundDataUrl;
 }
 
+function getPreviewImageSrc(src: string, width = 480) {
+  if (!src || src.startsWith("data:")) return src;
+  const uploadMarker = "/image/upload/";
+  const markerIndex = src.indexOf(uploadMarker);
+  if (markerIndex === -1 || !src.includes("res.cloudinary.com")) return src;
+  const beforeUpload = src.slice(0, markerIndex + uploadMarker.length);
+  const afterUpload = src.slice(markerIndex + uploadMarker.length);
+  const firstSegment = afterUpload.split("/")[0] || "";
+  if (firstSegment.includes(",") && !/^v\d+$/.test(firstSegment)) return src;
+  const previewWidth = Math.max(120, Math.min(960, Math.round(width)));
+  return `${beforeUpload}c_limit,w_${previewWidth},q_auto,f_auto/${afterUpload}`;
+}
+
 function formatProjectTime(value: string) {
   const timestamp = new Date(value).getTime();
   if (!Number.isFinite(timestamp)) return "Vừa cập nhật";
@@ -2242,7 +2255,7 @@ function ProjectDesignThumbnail({ template }: { template: Template }) {
       <rect x="0" y="0" width={width} height={height} fill="#ffffff" />
       {template.backgroundDataUrl ? (
         <image
-          href={template.backgroundDataUrl}
+          href={getPreviewImageSrc(template.backgroundDataUrl, 720)}
           x="0"
           y="0"
           width={width}
@@ -2291,7 +2304,7 @@ function ProjectDesignThumbnail({ template }: { template: Template }) {
                   </clipPath>
                 </defs>
                 <image
-                  href={layer.imageDataUrl}
+                  href={getPreviewImageSrc(layer.imageDataUrl, 720)}
                   x={layer.x}
                   y={layer.y}
                   width={layerWidth}
@@ -4810,7 +4823,7 @@ export default function App() {
     preview.style.background = "transparent";
 
     const previewImage = document.createElement("img");
-    previewImage.src = dataUrl;
+    previewImage.src = getPreviewImageSrc(dataUrl, 240);
     previewImage.alt = "";
     previewImage.draggable = false;
     previewImage.style.width = "100%";
@@ -7879,7 +7892,12 @@ export default function App() {
                             {item.kind === "design" ? (
                               <ProjectDesignThumbnail template={item.template} />
                             ) : item.image ? (
-                              <img src={item.image} alt={item.name} />
+                              <img
+                                src={getPreviewImageSrc(item.image)}
+                                alt={item.name}
+                                loading="lazy"
+                                decoding="async"
+                              />
                             ) : (
                               <span />
                             )}
@@ -8091,7 +8109,11 @@ export default function App() {
               </div>
               <div className="template-preview-frame">
                 {getTemplateLibraryImage(previewTemplate) ? (
-                  <img src={getTemplateLibraryImage(previewTemplate)} alt={previewTemplate.name} />
+                  <img
+                    src={getTemplateLibraryImage(previewTemplate)}
+                    alt={previewTemplate.name}
+                    decoding="async"
+                  />
                 ) : (
                   <div className="blank-preview-placeholder">Chưa có ảnh</div>
                 )}
@@ -8520,7 +8542,12 @@ export default function App() {
                       <label>Ảnh nền</label>
                       {template.backgroundDataUrl ? (
                         <div className="selected-template-preview">
-                          <img src={template.backgroundDataUrl} alt={template.name} />
+                          <img
+                            src={getPreviewImageSrc(template.backgroundDataUrl)}
+                            alt={template.name}
+                            loading="lazy"
+                            decoding="async"
+                          />
                           <button
                             type="button"
                             className="selected-template-delete"
@@ -8711,7 +8738,12 @@ export default function App() {
                         }}
                         onClick={() => placeImageInFrame(item)}
                       >
-                        <img src={getTemplateLibraryImage(item)} alt={item.name} />
+                        <img
+                          src={getPreviewImageSrc(getTemplateLibraryImage(item))}
+                          alt={item.name}
+                          loading="lazy"
+                          decoding="async"
+                        />
                         <span>{item.name}</span>
                       </button>
                     ))}
@@ -10338,7 +10370,12 @@ export default function App() {
                           onChange={() => toggleTemplateSelection(item.id)}
                         />
                         {getTemplateLibraryImage(item) ? (
-                          <img src={getTemplateLibraryImage(item)} alt={item.name} />
+                          <img
+                            src={getPreviewImageSrc(getTemplateLibraryImage(item))}
+                            alt={item.name}
+                            loading="lazy"
+                            decoding="async"
+                          />
                         ) : (
                           <div className="blank-image-placeholder" aria-label={`${item.name} chưa có ảnh`} />
                         )}
@@ -10458,7 +10495,12 @@ export default function App() {
                     >
                       <div className="template-thumb-wrap">
                         {getTemplateLibraryImage(item) ? (
-                          <img src={getTemplateLibraryImage(item)} alt={item.name} />
+                          <img
+                            src={getPreviewImageSrc(getTemplateLibraryImage(item))}
+                            alt={item.name}
+                            loading="lazy"
+                            decoding="async"
+                          />
                         ) : (
                           <div className="blank-image-placeholder" aria-label={`${item.name} chưa có ảnh`} />
                         )}
@@ -10516,7 +10558,11 @@ export default function App() {
             </div>
             <div className="template-preview-frame">
               {getTemplateLibraryImage(previewTemplate) ? (
-                <img src={getTemplateLibraryImage(previewTemplate)} alt={previewTemplate.name} />
+                <img
+                  src={getTemplateLibraryImage(previewTemplate)}
+                  alt={previewTemplate.name}
+                  decoding="async"
+                />
               ) : (
                 <div className="blank-preview-placeholder">Chưa có ảnh</div>
               )}

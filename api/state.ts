@@ -44,7 +44,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const sql = getSql();
-    await ensureTables(sql);
+    if (req.method !== "GET") {
+      await ensureTables(sql);
+    }
 
     if (req.method === "GET") {
       const rows = (await sql`
