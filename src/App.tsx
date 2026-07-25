@@ -4885,6 +4885,26 @@ export default function App() {
     setSelectedLayerIds((current) => current.filter((id) => !editableIdSet.has(id)));
   }
 
+  function duplicateSelectedLayers() {
+    if (!isAdminWorkspace || !editableSelectedLayers.length) return;
+    const duplicates = editableSelectedLayers.map((layer, index) => ({
+      ...layer,
+      id: uid(isShapeLayer(layer) ? "shape" : "layer"),
+      name: `${layer.name} - Bản sao`,
+      x: Math.min(Math.max(0, template.width - layer.width), layer.x + 24 + index * 8),
+      y: Math.min(
+        Math.max(0, template.height - (layer.height || layer.fontSize * layer.lineHeight)),
+        layer.y + 24 + index * 8
+      )
+    }));
+    updateTemplate((current) => ({
+      ...current,
+      updatedAt: new Date().toISOString(),
+      layers: [...current.layers, ...duplicates]
+    }));
+    setSelectedLayerIds(duplicates.map((layer) => layer.id));
+    setActiveCanvasTool("move");
+  }
   async function saveAdminStateToCloud(
     nextState: AppState,
     options: {
@@ -8968,6 +8988,15 @@ export default function App() {
                     </button>
                     <button
                       type="button"
+                      className="toolbar-icon-btn"
+                      title="Nhân bản"
+                      disabled={!isAdminWorkspace || !selectedLayersCanEdit}
+                      onClick={duplicateSelectedLayers}
+                    >
+                      <Copy size={17} />
+                    </button>
+                    <button
+                      type="button"
                       className="toolbar-icon-btn danger"
                       title="Delete selected elements"
                       disabled={!selectedLayersCanEdit}
@@ -9200,6 +9229,15 @@ export default function App() {
                     ) : null}
                     <button
                       type="button"
+                      className="toolbar-icon-btn"
+                      title="Nhân bản"
+                      disabled={!isAdminWorkspace || !selectedLayersCanEdit}
+                      onClick={duplicateSelectedLayers}
+                    >
+                      <Copy size={17} />
+                    </button>
+                    <button
+                      type="button"
                       className="toolbar-icon-btn danger"
                       title="Delete element"
                       disabled={!selectedLayerCanEdit}
@@ -9317,6 +9355,15 @@ export default function App() {
                         onChange={(event) => updateSelectedLayer({ width: Number(event.target.value) })}
                       />
                     </label>
+                    <button
+                      type="button"
+                      className="toolbar-icon-btn"
+                      title="Nhân bản"
+                      disabled={!isAdminWorkspace || !selectedLayersCanEdit}
+                      onClick={duplicateSelectedLayers}
+                    >
+                      <Copy size={17} />
+                    </button>
                     <button
                       type="button"
                       className="toolbar-icon-btn danger"
