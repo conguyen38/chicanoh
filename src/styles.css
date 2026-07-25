@@ -7072,3 +7072,242 @@ label.disabled {
     width: 92px;
   }
 }
+.effect-library {
+  border-top: 1px solid #e8edf5;
+  margin-top: 4px;
+  padding-top: 16px;
+}
+
+.effect-library-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.effect-library-head .section-label {
+  margin: 0;
+}
+
+.effect-library-head p {
+  margin: 3px 0 0;
+  color: #718096;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.effect-upload-btn {
+  min-height: 34px;
+  border: 1px solid #cfe0fb;
+  border-radius: 9px;
+  background: #f5f9ff;
+  color: #1b63c6;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.effect-upload-btn:hover:not(.disabled) {
+  background: #e8f1ff;
+}
+
+.effect-upload-btn input {
+  display: none;
+}
+
+.effect-library-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.effect-library-item {
+  position: relative;
+  min-width: 0;
+}
+
+.effect-library-card {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #dce5f1;
+  border-radius: 10px;
+  background:
+    linear-gradient(45deg, #f5f7fb 25%, transparent 25%),
+    linear-gradient(-45deg, #f5f7fb 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #f5f7fb 75%),
+    linear-gradient(-45deg, transparent 75%, #f5f7fb 75%),
+    #ffffff;
+  background-size: 12px 12px;
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+  display: grid;
+  gap: 6px;
+  padding: 7px;
+  color: #334155;
+  text-align: left;
+}
+
+.effect-library-card:hover {
+  border-color: #79a8ee;
+  box-shadow: 0 5px 14px rgba(37, 99, 235, 0.12);
+}
+
+.effect-library-card img {
+  width: 100%;
+  height: 72px;
+  object-fit: contain;
+}
+
+.effect-library-card span {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.effect-library-delete {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #dc2626;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+}
+
+.effect-library-item:hover .effect-library-delete,
+.effect-library-delete:focus-visible {
+  opacity: 1;
+}
+
+.effect-library-delete:hover {
+  background: #fee2e2;
+}
+
+.effect-library-empty {
+  border: 1px dashed #cbd8e9;
+  border-radius: 10px;
+  color: #64748b;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+@media (min-width: 768px) and (max-width: 1180px) {
+  .effect-library-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.effect-library-toggle {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid #dbe5f3;
+  border-radius: 10px;
+  background: #f8fbff;
+  color: #29496d;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 11px;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.effect-library-toggle:hover,
+.effect-library-toggle.active {
+  border-color: #9fc2f3;
+  background: #eef6ff;
+  color: #1452b7;
+}
+
+.effect-library-toggle svg {
+  margin-left: auto;
+  transition: transform 0.18s ease;
+}
+
+.effect-library-toggle.active svg {
+  transform: rotate(180deg);
+}
+
+.effect-library-count {
+  min-width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: #dcecff;
+  color: #185fa5;
+  display: inline-grid;
+  place-items: center;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+.effect-library-content {
+  padding-top: 12px;
+}
+.effect-preview {
+  background: linear-gradient(135deg, #5ca7ff, #246ee8);
+}
+
+.effect-panel-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 14px;
+}
+
+.effect-panel-head > div {
+  min-width: 0;
+}
+
+.effect-panel-head h2 {
+  margin: 0;
+}
+
+.effect-panel-head p {
+  margin: 2px 0 0;
+  color: #718096;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.effect-back-btn {
+  width: 36px;
+  height: 36px;
+  border: 1px solid #dbe5f3;
+  border-radius: 9px;
+  background: #f8fbff;
+  color: #1c5fb9;
+  display: grid;
+  place-items: center;
+}
+
+.effect-back-btn:hover {
+  background: #eaf3ff;
+}
+
+.effect-panel-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding-bottom: 12px;
+}
+
+@media (min-width: 768px) and (max-width: 1180px) {
+  .element-category-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .effect-panel-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -66,6 +66,7 @@ import {
   SlidersHorizontal,
   Square,
   SquareRoundCorner,
+  Sparkles,
   TextCursorInput,
   Trash2,
   Type,
@@ -77,7 +78,7 @@ import {
 type RowData = Record<string, string>;
 
 type CanvasTool = "move" | "hand" | "text";
-type DesignPanel = "elements" | "images" | "text";
+type DesignPanel = "elements" | "effects" | "images" | "text";
 type ShapeVariant = "frame" | "rect" | "circle" | "image";
 type ImageUsage = "frame-fill" | "standalone";
 type CornerRadiusKey = "topLeft" | "topRight" | "bottomRight" | "bottomLeft";
@@ -193,6 +194,8 @@ type TemplateImage = {
   createdAt: string;
 };
 
+type EffectAsset = TemplateImage;
+
 type PendingTemplateUploadStatus = "ready" | "uploading" | "saved" | "error";
 
 type PendingTemplateUpload = {
@@ -236,6 +239,7 @@ type AppState = {
   templateFolders: TemplateFolder[];
   imageFolders: ImageFolder[];
   templateImages: TemplateImage[];
+  effectAssets: EffectAsset[];
   templates: Template[];
   activeTemplateId: string;
   datasets: Dataset[];
@@ -1742,6 +1746,7 @@ function createInitialState(): AppState {
     ],
     imageFolders: [],
     templateImages: [],
+    effectAssets: [],
     templates: [template],
     activeTemplateId: template.id,
     datasets: [],
@@ -1791,6 +1796,7 @@ function normalizeAppState(parsed: Partial<AppState> | null | undefined): AppSta
   const parsedAny = parsed as unknown as {
     templates: Array<Partial<Template> & { libraryDataUrl?: string }>;
     templateImages?: Partial<TemplateImage>[];
+    effectAssets?: Partial<EffectAsset>[];
     imageFolders?: Partial<ImageFolder>[];
   };
   const imageFolders = Array.isArray(parsedAny.imageFolders)
@@ -1821,6 +1827,11 @@ function normalizeAppState(parsed: Partial<AppState> | null | undefined): AppSta
     ? parsedAny.templateImages
         .map((image, index) => normalizeTemplateImage(image, index))
         .filter((image): image is TemplateImage => Boolean(image))
+    : [];
+  const effectAssets = Array.isArray(parsedAny.effectAssets)
+    ? parsedAny.effectAssets
+        .map((image, index) => normalizeTemplateImage(image, index))
+        .filter((image): image is EffectAsset => Boolean(image))
     : [];
   const templateImages = [...savedImages, ...migratedImages].map((image) => ({
     ...image,
@@ -1864,6 +1875,7 @@ function normalizeAppState(parsed: Partial<AppState> | null | undefined): AppSta
     templateFolders: normalizedFolders,
     imageFolders,
     templateImages,
+    effectAssets,
     templates,
     activeTemplateId,
     datasets,
@@ -1885,6 +1897,7 @@ function persistedLibraryState(appState: AppState): AppState {
     templateFolders: appState.templateFolders,
     imageFolders: appState.imageFolders,
     templateImages: appState.templateImages,
+    effectAssets: appState.effectAssets,
     templates,
     activeTemplateId: templates.some((template) => template.id === appState.activeTemplateId)
       ? appState.activeTemplateId
@@ -1913,6 +1926,7 @@ function mergePersistedLibraries(workspaceState: AppState, persistedState: AppSt
     templateFolders: persistedState.templateFolders,
     imageFolders: persistedState.imageFolders,
     templateImages: persistedState.templateImages,
+    effectAssets: persistedState.effectAssets,
     templates,
     activeTemplateId,
     datasets: persistedState.datasets,
@@ -1930,6 +1944,7 @@ function appStateForLocalBackup(appState: AppState) {
   return {
     ...libraryState,
     templateImages: libraryState.templateImages.filter((image) => !image.dataUrl.startsWith("data:")),
+    effectAssets: libraryState.effectAssets.filter((effect) => !effect.dataUrl.startsWith("data:")),
     customFonts: libraryState.customFonts.filter((font) => !font.dataUrl.startsWith("data:"))
   };
 }
@@ -5594,6 +5609,67 @@ export default function App() {
     }
   }
 
+  async function uploadEffectAssets(files: Array<File | undefined | null>) {
+    if (!isAdminWorkspace || isUploadingAsset) return;
+    const imageFiles = files.filter((file): file is File =>
+      Boolean(file && (file.type === "image/png" || file.type === "image/webp"))
+    );
+    if (!imageFiles.length) {
+      showDownloadToast("Chỉ hỗ trợ hiệu ứng PNG hoặc WebP");
+      return;
+    }
+    setIsUploadingAsset(true);
+    try {
+      const savedEffects: EffectAsset[] = [];
+      for (const file of imageFiles) {
+        const dataUrl = await fileToDataUrl(file);
+        const image = await loadHtmlImage(dataUrl);
+        const optimized = await optimizeImageForServerUpload(file);
+        let assetUrl = dataUrl;
+        let width = image.naturalWidth || image.width;
+        let height = image.naturalHeight || image.height;
+        if (remoteSyncEnabledRef.current) {
+          const uploaded = await uploadAssetToCloudinary(optimized.file, "image");
+          assetUrl = uploaded.url;
+          width = uploaded.width || optimized.width;
+          height = uploaded.height || optimized.height;
+        }
+        savedEffects.push({
+          id: uid("effect"),
+          name: file.name.replace(/\.[^.]+$/, "") || "Hiệu ứng mới",
+          folderId: "global_effects",
+          width,
+          height,
+          dataUrl: assetUrl,
+          createdAt: new Date().toISOString()
+        });
+      }
+      if (savedEffects.length) {
+        setAppState((current) => ({
+          ...current,
+          effectAssets: [...savedEffects.reverse(), ...current.effectAssets]
+        }));
+        showDownloadToast(`Đã tải lên ${savedEffects.length} hiệu ứng`);
+      }
+    } catch (error) {
+      showDownloadToast(error instanceof Error ? error.message : "Không tải được hiệu ứng");
+    } finally {
+      setIsUploadingAsset(false);
+    }
+  }
+
+  function addEffectToCanvas(effect: EffectAsset) {
+    if (!isAdminWorkspace) return;
+    placeImageInFrame(effect, undefined, undefined, false);
+  }
+
+  function deleteEffectAsset(effectId: string) {
+    if (!isAdminWorkspace) return;
+    setAppState((current) => ({
+      ...current,
+      effectAssets: current.effectAssets.filter((effect) => effect.id !== effectId)
+    }));
+  }
   async function uploadImagesToCurrentTemplateFolder(files: Array<File | undefined | null>) {
     if (!isAdminWorkspace) return;
     await uploadImagesToLibraryFolder(
@@ -8584,6 +8660,16 @@ export default function App() {
                     </div>
                     <span>Hình khối</span>
                   </button>
+                  <button
+                    type="button"
+                    className="element-card"
+                    onClick={() => setActiveDesignPanel("effects")}
+                  >
+                    <div className="element-preview shape-preview effect-preview">
+                      <Sparkles size={31} />
+                    </div>
+                    <span>{"Hiệu ứng"}</span>
+                  </button>
                   <button type="button" className="element-card" onClick={() => addShapeLayer("circle")}>
                     <div className="element-preview shape-preview circle-preview">
                       <Circle size={38} />
@@ -8632,6 +8718,68 @@ export default function App() {
                     </div>
                   </>
                 ) : null}
+              </>
+            ) : activeDesignPanel === "effects" ? (
+              <>
+                <div className="panel-head compact effect-panel-head">
+                  <button
+                    type="button"
+                    className="effect-back-btn"
+                    title={"Quay lại Thành phần"}
+                    onClick={() => setActiveDesignPanel("elements")}
+                  >
+                    <ArrowLeft size={18} />
+                  </button>
+                  <div>
+                    <h2>{"Hiệu ứng"}</h2>
+                    <p>{"Dùng chung cho tất cả thiết kế"}</p>
+                  </div>
+                  {isAdminWorkspace ? (
+                    <label className={isUploadingAsset ? "effect-upload-btn disabled" : "effect-upload-btn"}>
+                      <ImageUp size={17} />
+                      <span>{"Tải lên"}</span>
+                      <input
+                        type="file"
+                        accept="image/png,image/webp"
+                        multiple
+                        disabled={isUploadingAsset}
+                        onChange={(event) => {
+                          void uploadEffectAssets(Array.from(event.target.files || []));
+                          event.target.value = "";
+                        }}
+                      />
+                    </label>
+                  ) : null}
+                </div>
+                {appState.effectAssets.length ? (
+                  <div className="effect-library-grid effect-panel-grid">
+                    {appState.effectAssets.map((effect) => (
+                      <div key={effect.id} className="effect-library-item">
+                        <button
+                          type="button"
+                          className="effect-library-card"
+                          title={effect.name}
+                          onClick={() => addEffectToCanvas(effect)}
+                        >
+                          <img src={getPreviewImageSrc(effect.dataUrl, 180)} alt={effect.name} loading="lazy" />
+                          <span>{effect.name}</span>
+                        </button>
+                        {isAdminWorkspace ? (
+                          <button
+                            type="button"
+                            className="effect-library-delete"
+                            title={"Xóa hiệu ứng khỏi thư viện"}
+                            onClick={() => deleteEffectAsset(effect.id)}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="effect-library-empty">{"Chưa có hiệu ứng. Tải PNG hoặc WebP nền trong suốt để dùng chung."}</div>
+                )}
               </>
             ) : activeDesignPanel === "images" ? (
               <>
