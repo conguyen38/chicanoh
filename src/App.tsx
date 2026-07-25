@@ -3938,6 +3938,12 @@ export default function App() {
         undoLastChange();
         return;
       }
+      const selectedIds = selectedLayerIdsRef.current;
+      if (isControlShortcut && key === "d" && isAdminWorkspace && selectedIds.length) {
+        event.preventDefault();
+        duplicateSelectedLayers();
+        return;
+      }
       if (isControlShortcut && key === "y") {
         event.preventDefault();
         redoLastChange();
@@ -3960,7 +3966,6 @@ export default function App() {
         return;
       }
 
-      const selectedIds = selectedLayerIdsRef.current;
       if (
         (event.key === "Backspace" || event.key === "Delete") &&
         selectedIds.length
@@ -4059,7 +4064,7 @@ export default function App() {
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", resetShortcut);
     };
-  }, [imageCropEditLayerId, isAdminWorkspace, template.id, template.layers]);
+  }, [imageCropEditLayerId, isAdminWorkspace, selectedLayerIds, template.id, template.layers]);
 
   function updateTemplate(updater: (template: Template) => Template) {
     if (!isAdminWorkspace) {
@@ -9654,6 +9659,16 @@ export default function App() {
                       }}
                       onPointerDown={(event) => event.stopPropagation()}
                     >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          duplicateSelectedLayers();
+                          setLayerContextMenu(null);
+                        }}
+                      >
+                        <Copy size={15} />
+                        {"Nhân bản"}
+                      </button>
                       <button
                         type="button"
                         onClick={() => moveLayerOrder(layerContextMenu.layerId, "front")}

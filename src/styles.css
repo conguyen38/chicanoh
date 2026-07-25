@@ -6956,3 +6956,119 @@ label.disabled {
   pointer-events: none;
   box-shadow: 0 6px 18px rgba(15, 23, 42, 0.22);
 }
+/* iPad landscape: preserve a usable canvas while keeping editor controls reachable. */
+@media (min-width: 768px) and (max-width: 1180px) {
+  .admin-header.canva-topbar {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    padding: 0 8px;
+  }
+
+  .topbar-folder-back-btn {
+    width: 38px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .topbar-folder-back-btn span,
+  .canva-topbar .cloud-sync-status {
+    display: none;
+  }
+
+  .topbar-title {
+    max-width: 34vw;
+    padding: 0 8px;
+  }
+
+  .topbar-right {
+    gap: 4px;
+  }
+
+  .topbar-link,
+  .topbar-template-save-btn,
+  .topbar-download-btn,
+  .topbar-mode {
+    min-height: 34px;
+    padding: 0 8px;
+    font-size: 13px;
+  }
+
+  .workspace-grid {
+    grid-template-columns: 260px minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .left-panel.design-panel {
+    padding: 16px 14px;
+  }
+
+  .element-category-grid {
+    gap: 14px 10px;
+  }
+
+  .element-preview {
+    width: 56px;
+    height: 56px;
+  }
+
+  .canvas-workspace {
+    padding: 18px 22px 78px;
+  }
+
+  .canva-property-toolbar {
+    min-height: 54px;
+    padding: 7px 8px;
+  }
+
+  .selection-toolbar {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    justify-content: flex-start;
+    scrollbar-width: none;
+  }
+
+  .selection-toolbar::-webkit-scrollbar,
+  .bottom-tool-group::-webkit-scrollbar {
+    display: none;
+  }
+
+  .canvas-bottom-bar.floating-canvas-tools {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 4px;
+    padding: 7px 8px;
+  }
+
+  .canvas-bottom-bar .bottom-history-controls {
+    grid-template-columns: repeat(2, 34px);
+  }
+
+  .canvas-bottom-bar .history-btn {
+    width: 34px;
+  }
+
+  .bottom-tool-group {
+    min-width: 0;
+    max-width: 100%;
+    justify-self: stretch;
+    justify-content: flex-start;
+    gap: 4px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .canvas-bottom-bar .fit-btn,
+  .canvas-bottom-bar .tool-btn {
+    min-height: 36px;
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .canvas-bottom-bar .bottom-zoom-controls {
+    gap: 2px;
+  }
+
+  .canvas-bottom-bar .zoom-slider {
+    width: 92px;
+  }
+}
