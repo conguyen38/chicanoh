@@ -153,6 +153,8 @@ type TextLayer = {
   letterSpacing: number;
   textTransform: "none" | "uppercase" | "lowercase";
   createdByClient?: boolean;
+  /** Admin guidance shown to clients when they hover this editable field. */
+  clientPrompt?: string;
 };
 
 type LayerBounds = {
@@ -1211,7 +1213,7 @@ function isStandaloneImageLayer(layer: TextLayer | null | undefined) {
 }
 
 function canEditLayerForMode(layer: TextLayer | null | undefined, isAdminWorkspace: boolean) {
-  return Boolean(layer && (isAdminWorkspace || layer.createdByClient));
+  return Boolean(layer && (isAdminWorkspace || layer.createdByClient || layer.clientPrompt));
 }
 
 function fontInfoFromFileName(fileName: string) {
@@ -2677,6 +2679,7 @@ export default function App() {
   const [showProjectAccountMenu, setShowProjectAccountMenu] = useState(false);
   const [isCanvasPanning, setIsCanvasPanning] = useState(false);
   const [inlineTextEditor, setInlineTextEditor] = useState<InlineTextEditor | null>(null);
+  const [hoveredClientPrompt, setHoveredClientPrompt] = useState<{ text: string; x: number; y: number } | null>(null);
   const [imageCropEditLayerId, setImageCropEditLayerId] = useState<string | null>(null);
   const [imageCropPreviewFocus, setImageCropPreviewFocus] = useState<{
     layerId: string;
@@ -4223,6 +4226,7 @@ export default function App() {
   ) {
     if (!canEditLayer(layer) || typeof layer.content !== "string") return;
     event.cancelBubble = true;
+    setHoveredClientPrompt(null);
     setActiveCanvasTool("move");
     setSelectedLayerIds([layer.id]);
     setInlineTextEditor({
@@ -4247,7 +4251,8 @@ export default function App() {
           ? {
               ...layer,
               content: nextValue,
-              name: nextValue.trim() || "Free text"
+              name: nextValue.trim() || "Free text",
+              ...(isAdminWorkspace && layer.clientPrompt ? { clientPrompt: nextValue } : {})
             }
           : layer
       )
@@ -4658,6 +4663,37 @@ export default function App() {
     setActiveCanvasTool("move");
   }
 
+  function addClientInfoField() {
+    if (!isAdminWorkspace) return;
+    const prompt = "Nhập thông tin tại đây";
+    const layer: TextLayer = {
+      id: uid("field"),
+      name: prompt,
+      kind: "text",
+      column: "",
+      content: prompt,
+      clientPrompt: prompt,
+      x: Math.max(32, Math.round(template.width * 0.2)),
+      y: Math.max(32, Math.round(template.height * 0.2)),
+      width: Math.max(160, Math.min(420, template.width - 64)),
+      fontFamily: availableFonts[0],
+      fontSize: DEFAULT_ADDED_TEXT_FONT_SIZE,
+      fontWeight: "600",
+      color: "#071025",
+      align: "left",
+      lineHeight: 1.16,
+      letterSpacing: 0,
+      textTransform: "none"
+    };
+    updateTemplate((current) => ({
+      ...current,
+      updatedAt: new Date().toISOString(),
+      layers: [...current.layers, layer]
+    }));
+    setSelectedLayerIds([layer.id]);
+    setActiveCanvasTool("move");
+    setInlineTextEditor({ layerId: layer.id, value: prompt });
+  }
   function addShapeLayer(shapeVariant: ShapeVariant) {
     if (!canEditWorkspace) return;
     const size = shapeVariant === "frame" ? 280 : 220;
@@ -8270,16 +8306,6 @@ export default function App() {
           <ImageUp size={24} />
           <span>Ảnh</span>
         </button>
-        <button
-          type="button"
-          className={activeDesignPanel === "text" ? "rail-tab active" : "rail-tab"}
-          title={isAdminWorkspace ? "Chữ" : "Dữ liệu"}
-          aria-pressed={activeDesignPanel === "text"}
-          onClick={() => setActiveDesignPanel("text")}
-        >
-          {isAdminWorkspace ? <Type size={24} /> : <FileSpreadsheet size={24} />}
-          <span>{isAdminWorkspace ? "Chữ" : "Dữ liệu"}</span>
-        </button>
 
         {isAdminWorkspace ? (
           <div className="rail-admin" ref={settingsMenuRef}>
@@ -8303,10 +8329,6 @@ export default function App() {
                 >
                   <ImageUp size={16} />
                   Ảnh
-                </button>
-                <button type="button" onClick={openDatasetLibraryModal}>
-                  <FileSpreadsheet size={16} />
-                  Dữ liệu
                 </button>
                 <button type="button" onClick={openFontLibraryModal}>
                   <Type size={16} />
@@ -9410,6 +9432,26 @@ export default function App() {
                           onContextMenu={(event) => openLayerContextMenu(layer.id, event)}
                           onDblClick={(event) => beginInlineFreeTextEdit(layer, event)}
                           onDblTap={(event) => beginInlineFreeTextEdit(layer, event)}
+                          onClick={(event) => {
+                            if (!isAdminWorkspace && layer.clientPrompt) beginInlineFreeTextEdit(layer, event);
+                          }}
+                          onMouseEnter={(event) => {
+                            if (isAdminWorkspace || !layer.clientPrompt) return;
+                            const pointer = event.target.getStage()?.getPointerPosition();
+                            if (pointer) setHoveredClientPrompt({ text: layer.clientPrompt, x: pointer.x + 12, y: pointer.y + 12 });
+                            const stage = event.target.getStage();
+                            if (stage) stage.container().style.cursor = "text";
+                          }}
+                          onMouseMove={(event) => {
+                            if (isAdminWorkspace || !layer.clientPrompt) return;
+                            const pointer = event.target.getStage()?.getPointerPosition();
+                            if (pointer) setHoveredClientPrompt({ text: layer.clientPrompt, x: pointer.x + 12, y: pointer.y + 12 });
+                          }}
+                          onMouseLeave={(event) => {
+                            if (!isAdminWorkspace && layer.clientPrompt) setHoveredClientPrompt(null);
+                            const stage = event.target.getStage();
+                            if (stage) stage.container().style.cursor = "";
+                          }}
                           onDragStart={(event) => handleLayerDragStart(layer.id, event)}
                           onDragMove={(event) => handleLayerDragMove(layer.id, event)}
                           onDragEnd={(event) => handleLayerDragEnd(layer.id, event)}
@@ -9547,6 +9589,15 @@ export default function App() {
                     />
                   </Layer>
                   </Stage>
+                  {hoveredClientPrompt ? (
+                    <div
+                      className="client-info-tooltip"
+                      style={{ left: hoveredClientPrompt.x, top: hoveredClientPrompt.y }}
+                      role="tooltip"
+                    >
+                      {hoveredClientPrompt.text}
+                    </div>
+                  ) : null}
                   {layerContextMenu ? (
                     <div
                       className="layer-context-menu"
@@ -9717,6 +9768,17 @@ export default function App() {
                     <Type size={18} />
                     <span>Chữ</span>
                   </button>
+                  {isAdminWorkspace ? (
+                    <button
+                      type="button"
+                      className="tool-btn"
+                      title="Thêm trường thông tin cho khách hàng"
+                      onClick={addClientInfoField}
+                    >
+                      <TextCursorInput size={18} />
+                      <span>Thêm trường thông tin</span>
+                    </button>
+                  ) : null}
                 </div>
                 <div className="zoom-controls bottom-zoom-controls" aria-label="Zoom controls">
                   <button

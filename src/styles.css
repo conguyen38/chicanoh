@@ -6941,3 +6941,18 @@ label.disabled {
   }
 
 }
+
+.client-info-tooltip {
+  position: absolute;
+  z-index: 30;
+  max-width: min(280px, calc(100% - 24px));
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.94);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  pointer-events: none;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.22);
+}
