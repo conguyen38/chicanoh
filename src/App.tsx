@@ -1684,6 +1684,32 @@ function getRootTemplateFolderId(
   return current?.id || fallbackFolderId;
 }
 
+function getFolderLatestActivity(
+  folderId: string,
+  folders: TemplateFolder[],
+  templates: Template[],
+  images: TemplateImage[]
+) {
+  const relatedFolderIds = new Set<string>([folderId]);
+  let foundChild = true;
+  while (foundChild) {
+    foundChild = false;
+    folders.forEach((folder) => {
+      if (folder.parentId && relatedFolderIds.has(folder.parentId) && !relatedFolderIds.has(folder.id)) {
+        relatedFolderIds.add(folder.id);
+        foundChild = true;
+      }
+    });
+  }
+
+  const timestamps = [
+    ...folders.filter((folder) => relatedFolderIds.has(folder.id)).map((folder) => folder.createdAt),
+    ...templates.filter((template) => relatedFolderIds.has(template.folderId)).map((template) => template.updatedAt),
+    ...images.filter((image) => relatedFolderIds.has(image.folderId)).map((image) => image.createdAt)
+  ].map((value) => new Date(value).getTime()).filter(Number.isFinite);
+
+  return timestamps.length ? Math.max(...timestamps) : 0;
+}
 function isBlankTemplate(template: Template | undefined) {
   return Boolean(template && !template.backgroundDataUrl && template.layers.length === 0);
 }
@@ -2981,7 +3007,26 @@ export default function App() {
   const projectFolderChildren = appState.templateFolders.filter(
     (folder) => folder.parentId === (activeProjectFolder ? activeProjectFolder.id : null)
   );
-  const visibleManagementFolders = projectFolderChildren;
+  const visibleManagementFolders = useMemo(
+    () =>
+      [...projectFolderChildren].sort((left, right) => {
+        const rightActivity = getFolderLatestActivity(
+          right.id,
+          appState.templateFolders,
+          visibleTemplates,
+          appState.templateImages
+        );
+        const leftActivity = getFolderLatestActivity(
+          left.id,
+          appState.templateFolders,
+          visibleTemplates,
+          appState.templateImages
+        );
+        if (rightActivity !== leftActivity) return rightActivity - leftActivity;
+        return new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime();
+      }),
+    [appState.templateFolders, appState.templateImages, projectFolderChildren, visibleTemplates]
+  );
   const projectSearchKeyword = normalizeText(projectSearch);
   const managementItems = useMemo(() => {
     const folderNameById = new Map(appState.templateFolders.map((folder) => [folder.id, folder.name]));
