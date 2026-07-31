@@ -3094,10 +3094,12 @@ export default function App() {
       : visibleManagementFolders;
   const isProjectHomeView = !activeProjectFolder && projectListingMode === "home";
   const isAdminProjectRootHome = isAdmin && projectRouteAdmin && isProjectHomeView;
-  const showProjectFoldersSection = activeProjectFolder
+  const isClientProjectLibrary = !(isAdmin && projectRouteAdmin && showTemplateLibraryModal);
+  const showProjectFoldersSection = !isClientProjectLibrary && (activeProjectFolder
     ? Boolean(visibleProjectFolders.length)
-    : projectListingMode !== "designs";
-  const showProjectDesignsSection = projectListingMode !== "folders" && !isAdminProjectRootHome;
+    : projectListingMode !== "designs");
+  const showProjectDesignsSection =
+    !isAdminProjectRootHome && (isClientProjectLibrary || projectListingMode !== "folders");
   const projectFolderPreviewLimit = getTwoRowPreviewLimit(
     projectContentWidth,
     PROJECT_FOLDER_CARD_MIN_WIDTH,
@@ -3155,7 +3157,9 @@ export default function App() {
   const selectedProjectImageCount = selectedProjectImageIds.length;
   const projectPageTitle = activeProjectFolder
     ? activeProjectFolder.name
-    : projectListingMode === "folders"
+    : isClientProjectLibrary
+      ? "T\u1ea5t c\u1ea3 thi\u1ebft k\u1ebf"
+      : projectListingMode === "folders"
       ? "Tất cả dự án"
       : projectListingMode === "designs"
         ? "Tất cả thiết kế"
@@ -7489,7 +7493,7 @@ export default function App() {
                   <input
                     value={projectSearch}
                     onChange={(event) => setProjectSearch(event.target.value)}
-                    placeholder="Tìm kiếm tên dự án hoặc mẫu thiết kế"
+                    placeholder={isClientProjectLibrary ? "T\u00ecm ki\u1ebfm m\u1eabu thi\u1ebft k\u1ebf" : "T\u00ecm ki\u1ebfm t\u00ean d\u1ef1 \u00e1n ho\u1eb7c m\u1eabu thi\u1ebft k\u1ebf"}
                   />
                   {projectSearch ? (
                     <button
@@ -8001,7 +8005,7 @@ export default function App() {
 
             {showProjectDesignsSection ? (
               <section className="project-section">
-                {!activeProjectFolder ? (
+                {!activeProjectFolder && !isClientProjectLibrary ? (
                   <div className="project-section-heading">
                     <button
                       type="button"
@@ -8130,7 +8134,7 @@ export default function App() {
                                 title="Đổi tên mẫu"
                               />
                             )}
-                            {!activeProjectFolder && item.kind === "design" ? (
+                            {isAdminProjectManager && !activeProjectFolder && item.kind === "design" ? (
                               <button
                                 type="button"
                                 className="project-card-folder-link"
