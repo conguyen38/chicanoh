@@ -5708,7 +5708,10 @@ export default function App() {
   }
 
   function addEffectToCanvas(effect: EffectAsset) {
-    if (!isAdmin) return;
+    if (!isAdmin) {
+      placeImageInFrame(effect, undefined, undefined, false);
+      return;
+    }
     if (isAdminWorkspace) {
       placeImageInFrame(effect, undefined, undefined, false);
       return;
