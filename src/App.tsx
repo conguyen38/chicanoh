@@ -5708,8 +5708,61 @@ export default function App() {
   }
 
   function addEffectToCanvas(effect: EffectAsset) {
-    if (!isAdminWorkspace) return;
-    placeImageInFrame(effect, undefined, undefined, false);
+    if (!isAdmin) return;
+    if (isAdminWorkspace) {
+      placeImageInFrame(effect, undefined, undefined, false);
+      return;
+    }
+
+    const dataUrl = getTemplateLibraryImage(effect);
+    if (!dataUrl) return;
+    const size = getContainedImageSize(
+      effect,
+      Math.min(420, Math.max(180, Math.round(template.width * 0.32))),
+      Math.min(420, Math.max(180, Math.round(template.height * 0.32)))
+    );
+    const layer: TextLayer = {
+      id: uid("image"),
+      name: effect.name || "Effect",
+      kind: "shape",
+      shapeVariant: "image",
+      column: "",
+      x: Math.max(0, Math.round((template.width - size.width) / 2)),
+      y: Math.max(0, Math.round((template.height - size.height) / 2)),
+      width: size.width,
+      height: size.height,
+      fontFamily: availableFonts[0],
+      fontSize: DEFAULT_ADDED_TEXT_FONT_SIZE,
+      fontWeight: "600",
+      color: "#071025",
+      fill: "#ffffff",
+      stroke: "#8b3dff",
+      strokeWidth: 0,
+      cornerRadius: 0,
+      opacity: 1,
+      imageDataUrl: dataUrl,
+      imageName: effect.name,
+      imageOriginalWidth: effect.width,
+      imageOriginalHeight: effect.height,
+      imageUsage: "standalone",
+      align: "left",
+      lineHeight: 1.16,
+      letterSpacing: 0,
+      textTransform: "none",
+      createdByClient: false
+    };
+    const nextState: AppState = {
+      ...appState,
+      templates: appState.templates.map((item) =>
+        item.id === template.id
+          ? { ...item, updatedAt: new Date().toISOString(), layers: [...item.layers, layer] }
+          : item
+      )
+    };
+    setAppState(nextState);
+    setSelectedLayerIds([layer.id]);
+    setActiveCanvasTool("move");
+    void saveAdminStateToCloud(nextState);
   }
 
   function deleteEffectAsset(effectId: string) {
