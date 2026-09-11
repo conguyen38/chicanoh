@@ -1,6 +1,15 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { hashPassword, requireAdmin } from "../_lib/auth.js";
-import { getAdminConfig, getSql, saveAdminConfig } from "../_lib/db.js";
+import { hashPassword } from "../_lib/auth.js";
+import {
+  findAdminUserById,
+  getAdminConfig,
+  getSql,
+  publicAdminUser,
+  saveAdminConfig,
+  updateAdminUserName,
+  updateAdminUserPassword
+} from "../_lib/db.js";
+import { MIN_PASSWORD_LENGTH, requireAdminUser } from "../_lib/users.js";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "GET" && req.method !== "PUT") {
@@ -9,36 +18,54 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const session = requireAdmin(req, res);
-  if (!session) return;
-
   try {
     const sql = getSql();
-    const current = await getAdminConfig(sql);
+    const current = await requireAdminUser(req, res, sql);
+    if (!current) return;
 
     if (req.method === "GET") {
-      res.status(200).json({ account: current.account });
+      res.status(200).json(publicAdminUser(current));
       return;
     }
 
     const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
-    const account = String(body.account || "").trim();
-    const password = String(body.password || "");
-    if (!account) {
-      res.status(400).json({ error: "Account is required" });
-      return;
-    }
-    if (password && password.length < 4) {
-      res.status(400).json({ error: "Password must be at least 4 characters" });
+    const password = String(body.password || "").trim();
+    const name = typeof body.name === "string" ? body.name.trim() : null;
+
+    if (!password && name === null) {
+      res.status(400).json({ error: "Không có thay đổi nào để lưu" });
       return;
     }
 
-    const nextConfig = {
-      account,
-      passwordHash: password ? hashPassword(password) : current.passwordHash
-    };
-    await saveAdminConfig(nextConfig, sql);
-    res.status(200).json({ ok: true, account: nextConfig.account });
+    if (name !== null) {
+      if (current.role === "super_admin") {
+        res.status(400).json({ error: "Tên của Super Admin được cố định" });
+        return;
+      }
+      if (!name) {
+        res.status(400).json({ error: "Tên không được để trống" });
+        return;
+      }
+      await updateAdminUserName(current.id, name, sql);
+    }
+
+    if (password) {
+      if (password.length < MIN_PASSWORD_LENGTH) {
+        res
+          .status(400)
+          .json({ error: `Mật khẩu cần ít nhất ${MIN_PASSWORD_LENGTH} ký tự` });
+        return;
+      }
+      const passwordHash = hashPassword(password);
+      await updateAdminUserPassword(current.id, passwordHash, sql);
+      if (current.role === "super_admin") {
+        const legacy = await getAdminConfig(sql);
+        await saveAdminConfig({ account: legacy.account, passwordHash }, sql);
+      }
+    }
+
+    const updated = (await findAdminUserById(current.id, sql)) || current;
+    res.status(200).json({ ok: true, ...publicAdminUser(updated) });
   } catch (error) {
     console.error("Could not save admin settings", error);
     res.status(500).json({

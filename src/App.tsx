@@ -48,6 +48,7 @@ import {
   FolderPlus,
   Hand,
   ImageUp,
+  KeyRound,
   LoaderCircle,
   Lock,
   LogOut,
@@ -64,6 +65,7 @@ import {
   SendToBack,
   Settings,
   Shapes,
+  ShieldCheck,
   SlidersHorizontal,
   Square,
   SquareRoundCorner,
@@ -71,12 +73,24 @@ import {
   TextCursorInput,
   Trash2,
   Type,
+  UserPlus,
+  Users,
   Redo2,
   Undo2,
   X
 } from "lucide-react";
 
 type RowData = Record<string, string>;
+
+type AdminRole = "super_admin" | "admin";
+
+type AdminUser = {
+  id: string;
+  account: string;
+  name: string;
+  role: AdminRole;
+  createdAt: string;
+};
 
 type CanvasTool = "move" | "hand" | "text";
 type DesignPanel = "elements" | "effects" | "images" | "text";
@@ -832,6 +846,8 @@ const ADMIN_ACCOUNT_KEY = "oh-property-maker-admin-account";
 const ADMIN_PASSWORD_HASH_KEY = "oh-property-maker-admin-password-hash";
 const DEFAULT_ADMIN_ACCOUNT = "admin";
 const DEFAULT_ADMIN_PASSWORD = "admin";
+const SUPER_ADMIN_NAME = "Super Admin";
+const MIN_ADMIN_PASSWORD_LENGTH = 4;
 const DEFAULT_TEMPLATE_FOLDER_ID = "folder_default";
 const DEFAULT_TEMPLATE_WIDTH = 1200;
 const DEFAULT_TEMPLATE_HEIGHT = 1500;
@@ -2645,6 +2661,25 @@ export default function App() {
   const [adminConfirmPassword, setAdminConfirmPassword] = useState("");
   const [adminSettingsMessage, setAdminSettingsMessage] = useState("");
   const [adminSettingsError, setAdminSettingsError] = useState("");
+  const [adminRole, setAdminRole] = useState<AdminRole>("admin");
+  const [adminName, setAdminName] = useState("");
+  const [adminUserId, setAdminUserId] = useState("");
+  const [showAccountManagerPage, setShowAccountManagerPage] = useState(false);
+  const [accountUsers, setAccountUsers] = useState<AdminUser[]>([]);
+  const [accountUsersLoading, setAccountUsersLoading] = useState(false);
+  const [accountManagerError, setAccountManagerError] = useState("");
+  const [accountManagerMessage, setAccountManagerMessage] = useState("");
+  const [accountManagerBusy, setAccountManagerBusy] = useState(false);
+  const [showCreateMemberForm, setShowCreateMemberForm] = useState(false);
+  const [newMemberAccount, setNewMemberAccount] = useState("");
+  const [newMemberName, setNewMemberName] = useState("");
+  const [newMemberPassword, setNewMemberPassword] = useState("");
+  const [memberPendingDeleteId, setMemberPendingDeleteId] = useState<string | null>(null);
+  const [memberResetPasswordId, setMemberResetPasswordId] = useState<string | null>(null);
+  const [memberResetPassword, setMemberResetPassword] = useState("");
+  const [editingOwnNameDraft, setEditingOwnNameDraft] = useState<string | null>(null);
+  const isSuperAdmin = adminRole === "super_admin";
+  const adminDisplayName = isSuperAdmin ? SUPER_ADMIN_NAME : adminName.trim() || adminAccount;
   const [showDatasetLibraryModal, setShowDatasetLibraryModal] = useState(false);
   const [showDataImportModal, setShowDataImportModal] = useState(false);
   const [isDataImportInline, setIsDataImportInline] = useState(false);
@@ -3487,6 +3522,9 @@ export default function App() {
         const data = (await readJsonResponse(response)) as {
           authenticated?: boolean;
           account?: string | null;
+          name?: string | null;
+          role?: string | null;
+          id?: string | null;
         } | null;
         if (!active || !response.ok) return;
         if (!data?.authenticated) {
@@ -3499,9 +3537,9 @@ export default function App() {
         touchAdminSession();
         lastSessionTouchRef.current = Date.now();
         setIsAdmin(true);
+        applyAdminIdentity(data);
         if (data.account) {
           localStorage.setItem(ADMIN_ACCOUNT_KEY, data.account);
-          setAdminAccount(data.account);
           setAdminLoginName(data.account);
           setAdminSettingsName(data.account);
         }
@@ -5152,12 +5190,18 @@ export default function App() {
       });
       const data = await readJsonResponse(response);
       if (response.ok) {
-        const account = (data as { account?: string } | null)?.account || adminLoginName.trim();
+        const identity = data as {
+          account?: string | null;
+          name?: string | null;
+          role?: string | null;
+          id?: string | null;
+        } | null;
+        const account = identity?.account || adminLoginName.trim();
         touchAdminSession();
         lastSessionTouchRef.current = Date.now();
         localStorage.setItem(ADMIN_ACCOUNT_KEY, account);
         setIsAdmin(true);
-        setAdminAccount(account);
+        applyAdminIdentity({ ...identity, account });
         setAdminLoginName(account);
         setAdminSettingsName(account);
         setAdminCode("");
@@ -5200,9 +5244,26 @@ export default function App() {
     lastSessionTouchRef.current = Date.now();
     skipNextRemoteSaveRef.current = false;
     setIsAdmin(true);
-    setAdminAccount(getStoredAdminAccount());
+    // The offline fallback has no account table, so treat the local login as the
+    // super admin to keep the workspace usable without the API.
+    applyAdminIdentity({ account: getStoredAdminAccount(), role: "super_admin" });
     setAdminLoginName(getStoredAdminAccount());
     setAdminCode("");
+  }
+
+  function applyAdminIdentity(identity: {
+    account?: string | null;
+    name?: string | null;
+    role?: string | null;
+    id?: string | null;
+  }) {
+    const role: AdminRole = identity.role === "super_admin" ? "super_admin" : "admin";
+    setAdminRole(role);
+    setAdminUserId(identity.id || "");
+    if (identity.account) setAdminAccount(identity.account);
+    setAdminName(
+      role === "super_admin" ? SUPER_ADMIN_NAME : identity.name || identity.account || ""
+    );
   }
 
   function expireAdminSession(message = "PhiÃªn admin Ä‘Ã£ háº¿t háº¡n, hÃ£y Ä‘Äƒng nháº­p láº¡i") {
@@ -5210,6 +5271,7 @@ export default function App() {
     setIsAdmin(false);
     setSelectedLayerIds([]);
     setShowAdminSettingsModal(false);
+    setShowAccountManagerPage(false);
     setAdminError(message);
     remoteSyncEnabledRef.current = false;
     remoteStateReadyRef.current = false;
@@ -5231,6 +5293,7 @@ export default function App() {
     setAdminError("");
     setAdminLoginName(getStoredAdminAccount());
     setShowAdminSettingsModal(false);
+    setShowAccountManagerPage(false);
     closeManagementPages();
   }
 
@@ -5249,7 +5312,6 @@ export default function App() {
     event.preventDefault();
     setAdminSettingsError("");
     setAdminSettingsMessage("");
-    const currentAccount = getStoredAdminAccount();
     if (!adminNewPassword || !adminConfirmPassword) {
       setAdminSettingsError("Vui lòng nhập mật khẩu mới và xác nhận mật khẩu");
       return;
@@ -5269,7 +5331,6 @@ export default function App() {
           credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            account: currentAccount,
             password: adminNewPassword.trim()
           })
         });
@@ -5293,6 +5354,178 @@ export default function App() {
     setAdminNewPassword("");
     setAdminConfirmPassword("");
     setAdminSettingsMessage("Đã đổi mật khẩu quản trị");
+  }
+
+  function resetAccountManagerForms() {
+    setShowCreateMemberForm(false);
+    setNewMemberAccount("");
+    setNewMemberName("");
+    setNewMemberPassword("");
+    setMemberPendingDeleteId(null);
+    setMemberResetPasswordId(null);
+    setMemberResetPassword("");
+    setEditingOwnNameDraft(null);
+  }
+
+  function applyAccountManagerResponse(data: unknown) {
+    const payload = data as { users?: AdminUser[]; me?: AdminUser } | null;
+    if (Array.isArray(payload?.users)) setAccountUsers(payload.users);
+    if (payload?.me) applyAdminIdentity(payload.me);
+  }
+
+  async function loadAccountUsers() {
+    setAccountUsersLoading(true);
+    setAccountManagerError("");
+    try {
+      const response = await fetch("/api/auth/users", { credentials: "include" });
+      const data = await readJsonResponse(response);
+      if (!response.ok) {
+        if (response.status === 401) {
+          expireAdminSession();
+          return;
+        }
+        throw new Error(errorMessageFromApi(data, "Không tải được danh sách tài khoản"));
+      }
+      if (!Array.isArray((data as { users?: AdminUser[] } | null)?.users)) {
+        // Local development serves the SPA for unknown /api routes, so an OK
+        // response without a user list still means account management is offline.
+        throw new Error("Quản lý tài khoản cần kết nối cơ sở dữ liệu");
+      }
+      applyAccountManagerResponse(data);
+    } catch (error) {
+      setAccountUsers([]);
+      setAccountManagerError(
+        error instanceof Error ? error.message : "Không tải được danh sách tài khoản"
+      );
+    } finally {
+      setAccountUsersLoading(false);
+    }
+  }
+
+  function openAccountManager() {
+    if (!isAdmin) return;
+    resetAccountManagerForms();
+    setAccountManagerMessage("");
+    setShowProjectAccountMenu(false);
+    setShowSettingsMenu(false);
+    setShowAccountManagerPage(true);
+    void loadAccountUsers();
+  }
+
+  function closeAccountManager() {
+    setShowAccountManagerPage(false);
+    resetAccountManagerForms();
+    setAccountManagerError("");
+    setAccountManagerMessage("");
+  }
+
+  async function requestAccountChange(
+    init: RequestInit,
+    successMessage: string,
+    fallbackError: string
+  ) {
+    setAccountManagerBusy(true);
+    setAccountManagerError("");
+    setAccountManagerMessage("");
+    try {
+      const response = await fetch("/api/auth/users", {
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        ...init
+      });
+      const data = await readJsonResponse(response);
+      if (!response.ok) {
+        if (response.status === 401) {
+          expireAdminSession();
+          return false;
+        }
+        throw new Error(errorMessageFromApi(data, fallbackError));
+      }
+      applyAccountManagerResponse(data);
+      setAccountManagerMessage(successMessage);
+      return true;
+    } catch (error) {
+      setAccountManagerError(error instanceof Error ? error.message : fallbackError);
+      return false;
+    } finally {
+      setAccountManagerBusy(false);
+    }
+  }
+
+  async function createMemberAccount(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const account = newMemberAccount.trim();
+    const name = newMemberName.trim();
+    const password = newMemberPassword.trim();
+    if (!account) {
+      setAccountManagerError("Vui lòng nhập tài khoản đăng nhập");
+      return;
+    }
+    if (password.length < MIN_ADMIN_PASSWORD_LENGTH) {
+      setAccountManagerError(`Mật khẩu cần ít nhất ${MIN_ADMIN_PASSWORD_LENGTH} ký tự`);
+      return;
+    }
+    const created = await requestAccountChange(
+      {
+        method: "POST",
+        body: JSON.stringify({ account, name: name || account, password })
+      },
+      `Đã tạo tài khoản ${account}`,
+      "Không tạo được tài khoản"
+    );
+    if (!created) return;
+    setNewMemberAccount("");
+    setNewMemberName("");
+    setNewMemberPassword("");
+    setShowCreateMemberForm(false);
+    await loadAccountUsers();
+  }
+
+  async function deleteMemberAccount(user: AdminUser) {
+    setMemberPendingDeleteId(null);
+    await requestAccountChange(
+      { method: "DELETE", body: JSON.stringify({ id: user.id }) },
+      `Đã xóa tài khoản ${user.account}`,
+      "Không xóa được tài khoản"
+    );
+  }
+
+  async function saveMemberPassword(user: AdminUser) {
+    const password = memberResetPassword.trim();
+    if (password.length < MIN_ADMIN_PASSWORD_LENGTH) {
+      setAccountManagerError(`Mật khẩu cần ít nhất ${MIN_ADMIN_PASSWORD_LENGTH} ký tự`);
+      return;
+    }
+    const saved = await requestAccountChange(
+      { method: "PATCH", body: JSON.stringify({ id: user.id, password }) },
+      `Đã đổi mật khẩu cho ${user.account}`,
+      "Không đổi được mật khẩu"
+    );
+    if (!saved) return;
+    if (user.id === adminUserId) {
+      localStorage.setItem(ADMIN_PASSWORD_HASH_KEY, await sha256(password));
+    }
+    setMemberResetPasswordId(null);
+    setMemberResetPassword("");
+  }
+
+  async function saveOwnDisplayName() {
+    const name = (editingOwnNameDraft || "").trim();
+    if (!name) {
+      setAccountManagerError("Tên không được để trống");
+      return;
+    }
+    if (!adminUserId) {
+      setAccountManagerError("Không xác định được tài khoản đang đăng nhập");
+      return;
+    }
+    const saved = await requestAccountChange(
+      { method: "PATCH", body: JSON.stringify({ id: adminUserId, name }) },
+      "Đã cập nhật tên hiển thị",
+      "Không đổi được tên hiển thị"
+    );
+    if (!saved) return;
+    setEditingOwnNameDraft(null);
   }
 
   function openTemplateLibraryModal() {
@@ -7619,6 +7852,327 @@ export default function App() {
     </div>
   ) : null;
 
+  if (showAccountManagerPage && isAdmin) {
+    return (
+      <div className="project-manager-shell">
+        <header className="project-manager-header">
+          <div className="project-manager-brand">
+            <img src={ONEHOUSING_LOGO_URL} alt="OneHousing" />
+          </div>
+          <div className="project-account-menu-wrap" ref={projectAccountMenuRef}>
+            <button
+              type="button"
+              className={showProjectAccountMenu ? "project-account-btn active" : "project-account-btn"}
+              aria-expanded={showProjectAccountMenu}
+              onClick={() => setShowProjectAccountMenu((current) => !current)}
+            >
+              <span>{adminDisplayName.slice(0, 1).toUpperCase()}</span>
+              <strong>{adminDisplayName}</strong>
+              <ChevronDown size={16} />
+            </button>
+            {showProjectAccountMenu ? (
+              <div className="project-account-menu" role="menu">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowProjectAccountMenu(false);
+                    openAdminSettings();
+                  }}
+                >
+                  <Lock size={16} />
+                  Đổi mật khẩu
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowProjectAccountMenu(false);
+                    logoutAdmin();
+                  }}
+                >
+                  <LogOut size={16} />
+                  Đăng xuất
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </header>
+
+        <main className="project-main">
+          <div className="account-manager-page">
+            <button
+              type="button"
+              className="account-manager-back"
+              onClick={closeAccountManager}
+            >
+              <ArrowLeft size={17} />
+              <span>Quay lại</span>
+            </button>
+
+            <div className="account-manager-head">
+              <div>
+                <h1>Quản lý tài khoản</h1>
+                <p>
+                  Tạo tài khoản cho thành viên cùng sử dụng trang quản trị. Tài khoản Super
+                  Admin không thể bị xóa.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn blue"
+                onClick={() => {
+                  setAccountManagerError("");
+                  setAccountManagerMessage("");
+                  setShowCreateMemberForm((current) => !current);
+                }}
+              >
+                <UserPlus size={17} />
+                Thêm thành viên
+              </button>
+            </div>
+
+            {showCreateMemberForm ? (
+              <form className="account-create-card" onSubmit={createMemberAccount}>
+                <div className="account-create-grid">
+                  <div className="form-group">
+                    <label htmlFor="new-member-account">Tài khoản đăng nhập</label>
+                    <input
+                      id="new-member-account"
+                      autoFocus
+                      autoComplete="off"
+                      value={newMemberAccount}
+                      onChange={(event) => setNewMemberAccount(event.target.value)}
+                      placeholder="vd: thanhvien01"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label htmlFor="new-member-name">Tên hiển thị</label>
+                    <input
+                      id="new-member-name"
+                      autoComplete="off"
+                      value={newMemberName}
+                      onChange={(event) => setNewMemberName(event.target.value)}
+                      placeholder="vd: Nguyễn Văn A"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label htmlFor="new-member-password">Mật khẩu</label>
+                    <input
+                      id="new-member-password"
+                      type="password"
+                      autoComplete="new-password"
+                      value={newMemberPassword}
+                      onChange={(event) => setNewMemberPassword(event.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="account-create-actions">
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    onClick={() => {
+                      setShowCreateMemberForm(false);
+                      setNewMemberAccount("");
+                      setNewMemberName("");
+                      setNewMemberPassword("");
+                    }}
+                  >
+                    Hủy
+                  </button>
+                  <button type="submit" className="btn blue" disabled={accountManagerBusy}>
+                    <Save size={17} />
+                    Tạo tài khoản
+                  </button>
+                </div>
+              </form>
+            ) : null}
+
+            {accountManagerError ? (
+              <div className="form-error">{accountManagerError}</div>
+            ) : null}
+            {accountManagerMessage ? (
+              <div className="form-success">{accountManagerMessage}</div>
+            ) : null}
+
+            {accountUsersLoading ? (
+              <div className="account-list-empty">Đang tải danh sách tài khoản...</div>
+            ) : !accountUsers.length ? (
+              <div className="account-list-empty">Chưa có tài khoản nào để hiển thị.</div>
+            ) : (
+              <ul className="account-list">
+                {accountUsers.map((user) => {
+                  const isSelf = user.id === adminUserId;
+                  const isSuperAdminRow = user.role === "super_admin";
+                  const canRename = isSelf && !isSuperAdminRow;
+                  const canResetPassword = isSelf || (isSuperAdmin && !isSuperAdminRow);
+                  const canDelete = !isSuperAdminRow && !isSelf;
+                  const isRenaming = canRename && editingOwnNameDraft !== null;
+                  const isResetting = memberResetPasswordId === user.id;
+                  return (
+                    <li key={user.id} className="account-row">
+                      <div className="account-row-main">
+                        <span className="account-avatar">
+                          {user.name.slice(0, 1).toUpperCase()}
+                        </span>
+                        <div className="account-row-info">
+                          {isRenaming ? (
+                            <div className="account-inline-edit">
+                              <input
+                                autoFocus
+                                value={editingOwnNameDraft || ""}
+                                onChange={(event) => setEditingOwnNameDraft(event.target.value)}
+                                placeholder="Tên hiển thị"
+                              />
+                              <button
+                                type="button"
+                                className="btn blue small"
+                                disabled={accountManagerBusy}
+                                onClick={() => void saveOwnDisplayName()}
+                              >
+                                <Check size={15} />
+                                Lưu
+                              </button>
+                              <button
+                                type="button"
+                                className="btn ghost small"
+                                onClick={() => setEditingOwnNameDraft(null)}
+                              >
+                                Hủy
+                              </button>
+                            </div>
+                          ) : (
+                            <strong>{user.name}</strong>
+                          )}
+                          <span className="account-row-login">{user.account}</span>
+                        </div>
+                        <span
+                          className={
+                            isSuperAdminRow ? "account-role-badge super" : "account-role-badge"
+                          }
+                        >
+                          {isSuperAdminRow ? <ShieldCheck size={14} /> : <Users size={14} />}
+                          {isSuperAdminRow ? "Super Admin" : "Admin"}
+                        </span>
+                        {isSelf ? <span className="account-self-badge">Bạn</span> : null}
+                      </div>
+
+                      <div className="account-row-actions">
+                        {canRename && !isRenaming ? (
+                          <button
+                            type="button"
+                            className="icon-btn"
+                            title="Đổi tên hiển thị"
+                            onClick={() => {
+                              setAccountManagerError("");
+                              setAccountManagerMessage("");
+                              setMemberResetPasswordId(null);
+                              setEditingOwnNameDraft(user.name);
+                            }}
+                          >
+                            <Pencil size={16} />
+                          </button>
+                        ) : null}
+                        {canResetPassword ? (
+                          <button
+                            type="button"
+                            className="icon-btn"
+                            title="Đổi mật khẩu"
+                            onClick={() => {
+                              setAccountManagerError("");
+                              setAccountManagerMessage("");
+                              setEditingOwnNameDraft(null);
+                              setMemberResetPassword("");
+                              setMemberResetPasswordId(isResetting ? null : user.id);
+                            }}
+                          >
+                            <KeyRound size={16} />
+                          </button>
+                        ) : null}
+                        {canDelete ? (
+                          <button
+                            type="button"
+                            className="icon-btn danger"
+                            title="Xóa tài khoản"
+                            onClick={() => {
+                              setAccountManagerError("");
+                              setAccountManagerMessage("");
+                              setMemberPendingDeleteId(user.id);
+                            }}
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        ) : null}
+                      </div>
+
+                      {isResetting ? (
+                        <div className="account-inline-edit full">
+                          <input
+                            autoFocus
+                            type="password"
+                            autoComplete="new-password"
+                            value={memberResetPassword}
+                            onChange={(event) => setMemberResetPassword(event.target.value)}
+                            placeholder="Mật khẩu mới"
+                          />
+                          <button
+                            type="button"
+                            className="btn blue small"
+                            disabled={accountManagerBusy}
+                            onClick={() => void saveMemberPassword(user)}
+                          >
+                            <Check size={15} />
+                            Lưu
+                          </button>
+                          <button
+                            type="button"
+                            className="btn ghost small"
+                            onClick={() => {
+                              setMemberResetPasswordId(null);
+                              setMemberResetPassword("");
+                            }}
+                          >
+                            Hủy
+                          </button>
+                        </div>
+                      ) : null}
+
+                      {memberPendingDeleteId === user.id ? (
+                        <div className="account-delete-confirm">
+                          <span>
+                            Xóa tài khoản <strong>{user.account}</strong>? Thành viên này sẽ
+                            không đăng nhập được nữa.
+                          </span>
+                          <div>
+                            <button
+                              type="button"
+                              className="btn ghost small"
+                              onClick={() => setMemberPendingDeleteId(null)}
+                            >
+                              Hủy
+                            </button>
+                            <button
+                              type="button"
+                              className="btn danger small"
+                              disabled={accountManagerBusy}
+                              onClick={() => void deleteMemberAccount(user)}
+                            >
+                              <Trash2 size={15} />
+                              Xóa
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </main>
+        {adminSettingsDialog}
+      </div>
+    );
+  }
+
   if (showTemplateLibraryModal) {
     return (
       <div className="project-manager-shell">
@@ -7634,12 +8188,16 @@ export default function App() {
                 aria-expanded={showProjectAccountMenu}
                 onClick={() => setShowProjectAccountMenu((current) => !current)}
               >
-                <span>{adminAccount.slice(0, 1).toUpperCase()}</span>
-                <strong>{adminAccount}</strong>
+                <span>{adminDisplayName.slice(0, 1).toUpperCase()}</span>
+                <strong>{adminDisplayName}</strong>
                 <ChevronDown size={16} />
               </button>
               {showProjectAccountMenu ? (
                 <div className="project-account-menu" role="menu">
+                  <button type="button" onClick={openAccountManager}>
+                    <Users size={16} />
+                    Quản lý tài khoản
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
@@ -8666,6 +9224,10 @@ export default function App() {
                 <button type="button" onClick={openFontLibraryModal}>
                   <Type size={16} />
                   Fonts
+                </button>
+                <button type="button" onClick={openAccountManager}>
+                  <Users size={16} />
+                  Quản lý tài khoản
                 </button>
                 <button type="button" onClick={openAdminSettings}>
                   <BadgeCheck size={16} />

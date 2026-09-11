@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { requireAdmin } from "./_lib/auth.js";
 import { ensureTables, getSql } from "./_lib/db.js";
+import { resolveSessionUser } from "./_lib/users.js";
 
 const STATE_ID = "default";
 
@@ -45,6 +46,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const sql = getSql();
     if (req.method !== "GET") {
+      // A deleted account still holds a signed cookie until it expires, so writes
+      // are checked against the account table rather than the cookie alone.
+      if (!(await resolveSessionUser(req, sql))) {
+        res.status(401).json({ error: "Admin session required" });
+        return;
+      }
       await ensureTables(sql);
     }
 

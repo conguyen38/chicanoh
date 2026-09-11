@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createSessionCookie, verifyHash } from "../_lib/auth.js";
-import { getAdminConfig, getSql } from "../_lib/db.js";
+import { findAdminUserByAccount, getSql } from "../_lib/db.js";
 
 const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const RATE_LIMIT_MAX_ATTEMPTS = 8;
@@ -52,7 +52,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const sql = getSql();
-    const admin = await getAdminConfig(sql);
     const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body || {};
     const account = String(body.account || "").trim();
     const password = String(body.password || "");
@@ -63,15 +62,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return;
     }
 
-    if (account !== admin.account || !verifyHash(password, admin.passwordHash)) {
+    const user = account ? await findAdminUserByAccount(account, sql) : null;
+    if (!user || !verifyHash(password, user.passwordHash)) {
       recordFailedAttempt(limitKey);
       res.status(401).json({ error: "Invalid admin credentials" });
       return;
     }
 
     loginAttempts.delete(limitKey);
-    res.setHeader("Set-Cookie", createSessionCookie(req, admin.account));
-    res.status(200).json({ ok: true, account: admin.account });
+    res.setHeader(
+      "Set-Cookie",
+      createSessionCookie(req, { account: user.account, id: user.id, role: user.role })
+    );
+    res.status(200).json({
+      ok: true,
+      account: user.account,
+      name: user.name,
+      role: user.role,
+      id: user.id
+    });
   } catch (error) {
     console.error("Login failed", error);
     res.status(500).json({

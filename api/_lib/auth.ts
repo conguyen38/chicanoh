@@ -7,6 +7,8 @@ const SESSION_TTL_SECONDS = 8 * 60 * 60;
 type SessionPayload = {
   account: string;
   exp: number;
+  id?: string;
+  role?: string;
 };
 
 function base64UrlEncode(value: string) {
@@ -63,9 +65,14 @@ export function verifyHash(value: string, expectedHash: string) {
   return safeEqual(actualHash, expectedHash);
 }
 
-export function createSessionCookie(req: VercelRequest, account: string) {
+export function createSessionCookie(
+  req: VercelRequest,
+  user: { account: string; id?: string; role?: string }
+) {
   const payload: SessionPayload = {
-    account,
+    account: user.account,
+    id: user.id,
+    role: user.role,
     exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS
   };
   const encodedPayload = base64UrlEncode(JSON.stringify(payload));
@@ -106,7 +113,9 @@ export function readAdminSession(req: VercelRequest): SessionPayload | null {
     }
     return {
       account: parsed.account,
-      exp: parsed.exp
+      exp: parsed.exp,
+      id: typeof parsed.id === "string" ? parsed.id : undefined,
+      role: typeof parsed.role === "string" ? parsed.role : undefined
     };
   } catch {
     return null;

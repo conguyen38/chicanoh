@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { requireAdmin } from "../_lib/auth.js";
+import { resolveSessionUser } from "../_lib/users.js";
 
 type CloudinaryResourceType = "image" | "raw" | "auto";
 
@@ -12,7 +13,7 @@ function signCloudinaryParams(params: Record<string, string>, secret: string) {
   return createHash("sha1").update(`${payload}${secret}`).digest("hex");
 }
 
-export default function handler(req: VercelRequest, res: VercelResponse) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     res.status(405).json({ error: "Method not allowed" });
@@ -23,6 +24,13 @@ export default function handler(req: VercelRequest, res: VercelResponse) {
   if (!session) return;
 
   try {
+    // Deleted accounts keep a valid cookie until it expires, so confirm the
+    // account still exists before handing out upload credentials.
+    if (!(await resolveSessionUser(req))) {
+      res.status(401).json({ error: "Admin session required" });
+      return;
+    }
+
     const cloudName = process.env.CLOUDINARY_CLOUD_NAME || process.env.VITE_CLOUDINARY_CLOUD_NAME;
     const apiKey = process.env.CLOUDINARY_API_KEY;
     const apiSecret = process.env.CLOUDINARY_API_SECRET;
