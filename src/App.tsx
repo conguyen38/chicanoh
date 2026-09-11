@@ -1948,10 +1948,15 @@ function mergePersistedLibraries(workspaceState: AppState, persistedState: AppSt
       ? persistedState.templates
       : workspaceState.templates
   );
-  const activeTemplateId = templates.some((template) => template.id === persistedState.activeTemplateId)
-    ? persistedState.activeTemplateId
-    : templates.some((template) => template.id === workspaceState.activeTemplateId)
-      ? workspaceState.activeTemplateId
+  // Prefer the workspace's own active template (e.g. one selected by the
+  // current URL route) over the persisted/cloud value, which only tracks
+  // whatever template was last active in some other session and would
+  // otherwise hijack the current selection once this merge runs after the
+  // page has already loaded the right design.
+  const activeTemplateId = templates.some((template) => template.id === workspaceState.activeTemplateId)
+    ? workspaceState.activeTemplateId
+    : templates.some((template) => template.id === persistedState.activeTemplateId)
+      ? persistedState.activeTemplateId
       : templates[0]?.id || workspaceState.activeTemplateId;
   return {
     ...workspaceState,
