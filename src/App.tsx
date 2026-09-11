@@ -9,6 +9,7 @@ import Konva from "konva";
 import {
   Stage,
   Layer,
+  Group,
   Circle as KonvaCircle,
   Image as KonvaImage,
   Line,
@@ -339,7 +340,7 @@ const FALLBACK_TEXT_LAYER: TextLayer = {
   fontSize: 42,
   fontWeight: "600",
   fontStyle: "normal",
-  color: "#071025",
+  color: "#000000",
   align: "left",
   lineHeight: 1.16,
   letterSpacing: 0,
@@ -2753,6 +2754,8 @@ export default function App() {
   const layerRefs = useRef<Record<string, Konva.Node>>({});
   const imageCropGuideRectRef = useRef<Konva.Rect | null>(null);
   const imageCropGuideHandleRefs = useRef<Array<Konva.Circle | null>>([]);
+  const imageCropGuideOverlayRef = useRef<HTMLDivElement | null>(null);
+  const layerTransformOverlayRef = useRef<HTMLDivElement | null>(null);
   const selectionStartRef = useRef<{ x: number; y: number } | null>(null);
   const isSelectingRef = useRef(false);
   const isZoomShortcutPressedRef = useRef(false);
@@ -3245,10 +3248,16 @@ export default function App() {
     imageCropEditLayer &&
     isShapeLayer(imageCropEditLayer) &&
     imageCropEditLayer.imageDataUrl &&
-    !isStandaloneImageLayer(imageCropEditLayer) &&
-    imageCropEditLayer.imageOriginalWidth &&
-    imageCropEditLayer.imageOriginalHeight
+    imageCropEditLayer.shapeVariant === "frame"
       ? (() => {
+          if (!imageCropEditLayer.imageOriginalWidth || !imageCropEditLayer.imageOriginalHeight) {
+            return {
+              x: imageCropEditLayer.x,
+              y: imageCropEditLayer.y,
+              width: imageCropEditLayer.width,
+              height: imageCropEditLayer.height || imageCropEditLayer.width
+            };
+          }
           const previewFocus =
             imageCropPreviewFocus?.layerId === imageCropEditLayer.id ? imageCropPreviewFocus : null;
           const rect = getCoverImageContentRect(
@@ -3272,6 +3281,7 @@ export default function App() {
             : null;
         })()
       : null;
+  const showLegacyImageCropGuide = false;
   useEffect(() => {
     setShowCornerRadiusPopover(false);
   }, [selectedLayer?.id, hasMultiSelection]);
@@ -3333,8 +3343,7 @@ export default function App() {
   ): layer is TextLayer & { kind: "shape" } =>
     canEditWorkspace &&
     isShapeLayer(layer) &&
-    layer.shapeVariant === "frame" &&
-    !isStandaloneImageLayer(layer);
+    layer.shapeVariant === "frame";
   const canUseFrameSlotById = (layerId: string) =>
     canUseFrameSlot(template.layers.find((layer) => layer.id === layerId));
   const selectedLayerCanEdit = canEditLayer(selectedLayer);
@@ -3373,10 +3382,19 @@ export default function App() {
   const fitScale = useMemo(() => {
     if (!stageWidth || !stageHeight) return 0.5;
     const widthFit = (stageWidth - 76) / template.width;
-    const heightFit = (stageHeight - 110) / template.height;
+    // In the default view, a selected layer reserves extra room above the
+    // template for its toolbar. Include that space in the fit calculation so
+    // the bottom of a tall template is not hidden behind the bottom controls.
+    // Always reserve the property-toolbar area. The toolbar can then appear on
+    // selection without resizing or shifting the fitted template.
+    const propertyToolbarSpace = 64;
+    const heightFit = (stageHeight - 110 - propertyToolbarSpace) / template.height;
     return Math.min(1, Math.max(0.08, Math.min(widthFit, heightFit)));
   }, [stageHeight, stageWidth, template.height, template.width]);
   const stageScale = fitScale * zoomLevel;
+  // Keep the stage sized exactly to the template. Transform controls that need
+  // to escape this boundary are rendered as overlays, not scrollable canvas.
+  const transformControlBleed = 0;
   const zoomPercent = Math.round(zoomLevel * 100);
 
   useEffect(() => {
@@ -4687,7 +4705,7 @@ export default function App() {
       fontFamily: availableFonts[0],
       fontSize: DEFAULT_ADDED_TEXT_FONT_SIZE,
       fontWeight: "600",
-      color: "#071025",
+      color: "#000000",
       align: "left",
       lineHeight: 1.16,
       letterSpacing: 0,
@@ -4716,7 +4734,7 @@ export default function App() {
       fontFamily: availableFonts[0],
       fontSize,
       fontWeight: "600",
-      color: "#071025",
+      color: "#000000",
       align: "left",
       lineHeight: 1.16,
       letterSpacing: 0,
@@ -6561,20 +6579,51 @@ export default function App() {
     width: number;
     height: number;
   }) {
+    const overlay = imageCropGuideOverlayRef.current;
+    if (overlay) {
+      overlay.style.left = `${rect.x * stageScale}px`;
+      overlay.style.top = `${rect.y * stageScale}px`;
+      overlay.style.width = `${rect.width * stageScale}px`;
+      overlay.style.height = `${rect.height * stageScale}px`;
+    }
     const guideRect = imageCropGuideRectRef.current;
     if (!guideRect) return;
     guideRect.position({ x: rect.x, y: rect.y });
     guideRect.size({ width: rect.width, height: rect.height });
-    const points = [
-      [rect.x, rect.y],
-      [rect.x + rect.width, rect.y],
-      [rect.x + rect.width, rect.y + rect.height],
-      [rect.x, rect.y + rect.height]
-    ];
+    const points = getVisibleImageCropGuideHandlePoints(rect);
     points.forEach(([x, y], index) => {
       imageCropGuideHandleRefs.current[index]?.position({ x, y });
     });
     guideRect.getLayer()?.batchDraw();
+  }
+
+  // The image content may extend outside the template while cropping. Keep the
+  // resize handles inside the stage so there is always a visible way to zoom
+  // the image back out.
+  function getVisibleImageCropGuideHandlePoints(rect: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }) {
+    const inset = Math.max(6, 7 / stageScale);
+    const clampToStage = (value: number, max: number) =>
+      Math.min(Math.max(value, inset), Math.max(inset, max - inset));
+    return [
+      [clampToStage(rect.x, template.width), clampToStage(rect.y, template.height)],
+      [
+        clampToStage(rect.x + rect.width, template.width),
+        clampToStage(rect.y, template.height)
+      ],
+      [
+        clampToStage(rect.x + rect.width, template.width),
+        clampToStage(rect.y + rect.height, template.height)
+      ],
+      [
+        clampToStage(rect.x, template.width),
+        clampToStage(rect.y + rect.height, template.height)
+      ]
+    ];
   }
 
   function getImageCropGuideRectForLayer(layer: TextLayer, zoom = layer.imageCropZoom) {
@@ -6635,6 +6684,28 @@ export default function App() {
     setSelectionBox({ visible: true, x: pointer.x, y: pointer.y, width: 0, height: 0 });
   }
 
+  function beginWorkspaceSelection(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.target !== event.currentTarget || !canEditWorkspace || activeCanvasTool !== "move") return;
+    const pointer = getLogicalPointFromClient(event.clientX, event.clientY);
+    if (!pointer) return;
+    selectionStartRef.current = pointer;
+    isSelectingRef.current = true;
+    setSelectionBox({ visible: true, x: pointer.x, y: pointer.y, width: 0, height: 0 });
+  }
+
+  function updateWorkspaceSelection(event: React.PointerEvent<HTMLDivElement>) {
+    if (!isSelectingRef.current || !selectionStartRef.current) return;
+    const pointer = getLogicalPointFromClient(event.clientX, event.clientY);
+    if (!pointer) return;
+    const start = selectionStartRef.current;
+    setSelectionBox({ visible: true, x: start.x, y: start.y, width: pointer.x - start.x, height: pointer.y - start.y });
+  }
+
+  function finishWorkspaceSelection(event: React.PointerEvent<HTMLDivElement>) {
+    if (!isSelectingRef.current) return;
+    finishCanvasSelection(getLogicalPointFromClient(event.clientX, event.clientY));
+  }
+
   function updateCanvasSelection() {
     if (!isSelectingRef.current || !selectionStartRef.current) return;
     const pointer = getLogicalPointer();
@@ -6692,6 +6763,16 @@ export default function App() {
     if ("button" in event.evt && event.evt.button === 1) return;
     blurActiveEditableTarget();
     setLayerContextMenu(null);
+    // The text tool must work over existing images and shapes as well as on
+    // blank canvas. Previously a layer click switched back to Move first.
+    if (activeCanvasTool === "text") {
+      const pointer = getLogicalPointer();
+      if (pointer) {
+        event.cancelBubble = true;
+        addFreeTextLayer(Math.round(pointer.x), Math.round(pointer.y));
+      }
+      return;
+    }
     if (imageCropEditLayerId && imageCropEditLayerId !== layerId) {
       imageCropDragRef.current = null;
       imageCropScaleRef.current = null;
@@ -6791,8 +6872,7 @@ export default function App() {
     const layer = template.layers.find((item) => item.id === layerId);
     if (
       !canUseFrameSlot(layer) ||
-      !layer.imageDataUrl ||
-      isStandaloneImageLayer(layer)
+      !layer.imageDataUrl
     ) {
       return;
     }
@@ -6974,7 +7054,9 @@ export default function App() {
       imageNode.getLayer()?.batchDraw();
     }
     const guideRect = getImageCropGuideRectForLayer(layer, nextZoom);
-    if (guideRect) updateImageCropGuideNodes(guideRect);
+    if (guideRect) {
+      updateImageCropGuideNodes(guideRect);
+    }
   }
 
   function handleImageCropScaleEnd(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
@@ -6999,6 +7081,21 @@ export default function App() {
           : item
       )
     }));
+  }
+
+  function syncLayerTransformOverlayNode(node: Konva.Node) {
+    const overlay = layerTransformOverlayRef.current;
+    if (!overlay) return;
+    overlay.style.left = `${node.x() * stageScale}px`;
+    overlay.style.top = `${node.y() * stageScale}px`;
+    overlay.style.width = `${node.width() * (node.scaleX() || 1) * stageScale}px`;
+    overlay.style.height = `${node.height() * (node.scaleY() || 1) * stageScale}px`;
+  }
+
+  function syncSelectedLayerTransformOverlay() {
+    if (!selectedLayer) return;
+    const node = layerRefs.current[selectedLayer.id];
+    if (node) syncLayerTransformOverlayNode(node);
   }
 
   function handleLayerDragStart(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
@@ -7044,6 +7141,7 @@ export default function App() {
       });
     }
     updateAlignmentGuidesForDrag(layerId);
+    syncSelectedLayerTransformOverlay();
   }
 
   function handleLayerDragEnd(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
@@ -7145,6 +7243,7 @@ export default function App() {
           : getCornerRadiusPreviewValue(layer)
       );
     }
+    syncSelectedLayerTransformOverlay();
   }
 
   function handleLayerTransformEnd(layerId: string, event: Konva.KonvaEventObject<Event>) {
@@ -7180,6 +7279,7 @@ export default function App() {
   }
 
   function changeZoom(delta: number) {
+    setCanvasCenterAsZoomAnchor();
     setZoomLevel((current) =>
       Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number((current + delta).toFixed(2))))
     );
@@ -7187,24 +7287,28 @@ export default function App() {
 
   function setZoomFromSlider(value: string) {
     const nextZoom = Number(value) / 100;
+    setCanvasCenterAsZoomAnchor();
     setZoomLevel(Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number(nextZoom.toFixed(2)))));
+  }
+
+  function setCanvasCenterAsZoomAnchor() {
+    const shell = canvasShellRef.current;
+    const stage = stageRef.current;
+    if (!shell || !stage) return;
+    const shellRect = shell.getBoundingClientRect();
+    const stageRect = stage.container().getBoundingClientRect();
+    zoomAnchorRef.current = {
+      pointerX: shellRect.width / 2,
+      pointerY: shellRect.height / 2,
+      logicalX: (shellRect.width / 2 - (stageRect.left - shellRect.left)) / stageScale,
+      logicalY: (shellRect.height / 2 - (stageRect.top - shellRect.top)) / stageScale
+    };
   }
 
   function handleCanvasWheel(event: React.WheelEvent<HTMLDivElement>) {
     if (!isZoomShortcutPressedRef.current) return;
     event.preventDefault();
     event.stopPropagation();
-    const shell = event.currentTarget;
-    const stage = stageRef.current;
-    const stageRect = stage?.container().getBoundingClientRect();
-    if (stageRect) {
-      zoomAnchorRef.current = {
-        pointerX: event.clientX - shell.getBoundingClientRect().left,
-        pointerY: event.clientY - shell.getBoundingClientRect().top,
-        logicalX: (event.clientX - stageRect.left) / stageScale,
-        logicalY: (event.clientY - stageRect.top) / stageScale
-      };
-    }
     changeZoom(event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP);
   }
 
@@ -7238,6 +7342,18 @@ export default function App() {
     event?.currentTarget.releasePointerCapture?.(event.pointerId);
     canvasPanRef.current = null;
     setIsCanvasPanning(false);
+  }
+
+  function clearCanvasSelectionFromBlankArea(event: React.PointerEvent<HTMLDivElement>) {
+    const target = event.target as HTMLElement;
+    const isBlankCanvas =
+      event.target === event.currentTarget || target.classList?.contains("canvas-workspace");
+    if (!isBlankCanvas) return;
+    if (canvasPanRef.current) return;
+    setSelectedLayerIds([]);
+    setLayerContextMenu(null);
+    setImageCropPreviewFocus(null);
+    setImageCropEditLayerId(null);
   }
 
   function fitCanvasToFrame() {
@@ -9158,7 +9274,10 @@ export default function App() {
               </>
             )}
           </section>
-          <section className="canvas-panel" ref={canvasWrapRef}>
+          <section
+            className={selectedLayer ? "canvas-panel has-property-toolbar" : "canvas-panel"}
+            ref={canvasWrapRef}
+          >
             {selectedLayer ? (
               <div className="canvas-toolbar canva-property-toolbar">
                 <div className="selection-toolbar" aria-label="Selected layer properties">
@@ -9639,11 +9758,12 @@ export default function App() {
 
             <div
               ref={canvasShellRef}
-              className={`canvas-shell ${activeCanvasTool}-tool${isCanvasPanning ? " panning" : ""}`}
+              className={`canvas-shell ${activeCanvasTool}-tool${isCanvasPanning ? " panning" : ""}${zoomLevel > 1 ? " zoomed" : ""}`}
               onWheel={handleCanvasWheel}
               onPointerDown={beginCanvasPan}
+              onPointerUp={clearCanvasSelectionFromBlankArea}
               onPointerMove={updateCanvasPan}
-              onPointerUp={finishCanvasPan}
+              onPointerUpCapture={finishCanvasPan}
               onPointerCancel={finishCanvasPan}
               onPointerLeave={finishCanvasPan}
               onAuxClick={(event) => {
@@ -9652,7 +9772,12 @@ export default function App() {
               onDragOver={(event) => event.preventDefault()}
               onDrop={handleCanvasDrop}
             >
-              <div className="canvas-workspace">
+              <div
+                className="canvas-workspace"
+                onPointerDown={beginWorkspaceSelection}
+                onPointerMove={updateWorkspaceSelection}
+                onPointerUp={finishWorkspaceSelection}
+              >
                 <div className="stage-stack">
                 <div
                   className={template.backgroundDataUrl ? "stage-card" : "stage-card transparent"}
@@ -9663,13 +9788,13 @@ export default function App() {
                 >
                   <Stage
                     ref={stageRef}
-                    width={template.width * stageScale}
-                    height={template.height * stageScale}
+                    width={template.width * stageScale + transformControlBleed}
+                    height={template.height * stageScale + transformControlBleed}
                     scaleX={stageScale}
                     scaleY={stageScale}
                     style={{
-                      width: template.width * stageScale,
-                      height: template.height * stageScale
+                      width: template.width * stageScale + transformControlBleed,
+                      height: template.height * stageScale + transformControlBleed
                     }}
                     onMouseDown={beginCanvasSelection}
                     onMouseMove={updateCanvasSelection}
@@ -9679,6 +9804,12 @@ export default function App() {
                     onTouchEnd={() => finishCanvasSelection()}
                   >
                   <Layer>
+                    <Group
+                      clipX={0}
+                      clipY={0}
+                      clipWidth={template.width}
+                      clipHeight={template.height}
+                    >
                     {backgroundImage ? (
                       <KonvaImage
                         name="background"
@@ -9765,7 +9896,7 @@ export default function App() {
                         />
                       )
                     )}
-                    {imageCropGuideRect ? (
+                    {showLegacyImageCropGuide && imageCropGuideRect ? (
                       <>
                         <Rect
                           ref={(node) => {
@@ -9781,12 +9912,7 @@ export default function App() {
                           dash={[6 / stageScale, 4 / stageScale]}
                           listening={false}
                         />
-                        {[
-                          [imageCropGuideRect.x, imageCropGuideRect.y],
-                          [imageCropGuideRect.x + imageCropGuideRect.width, imageCropGuideRect.y],
-                          [imageCropGuideRect.x + imageCropGuideRect.width, imageCropGuideRect.y + imageCropGuideRect.height],
-                          [imageCropGuideRect.x, imageCropGuideRect.y + imageCropGuideRect.height]
-                        ].map(([x, y], index) => (
+                        {getVisibleImageCropGuideHandlePoints(imageCropGuideRect).map(([x, y], index) => (
                           <KonvaCircle
                             key={`image-crop-guide-handle-${index}`}
                             ref={(node) => {
@@ -9857,6 +9983,7 @@ export default function App() {
                         listening={false}
                       />
                     ))}
+                    </Group>
                     <Transformer
                       ref={transformerRef}
                       visible={activeCanvasTool === "move" && !inlineTextEditor && !imageCropEditLayerId}
@@ -9869,7 +9996,9 @@ export default function App() {
                       rotationSnapTolerance={5}
                       anchorStyleFunc={styleTransformerAnchor}
                       enabledAnchors={
-                        selectionHasShape
+                        selectedLayerIsStandaloneImage
+                          ? ["top-left", "top-right", "bottom-right", "bottom-left"]
+                          : selectionHasShape
                           ? [
                               "top-left",
                               "top-center",
@@ -9882,8 +10011,11 @@ export default function App() {
                             ]
                           : ["middle-left", "middle-right"]
                       }
-                      borderStroke={selectedOutlineColor}
-                      anchorStroke={selectedOutlineColor}
+                      keepRatio={selectedLayerIsStandaloneImage}
+                      anchorSize={10}
+                      padding={0}
+                      borderStroke={selectedLayerIsStandaloneImage ? "#8b3dff" : selectedOutlineColor}
+                      anchorStroke={selectedLayerIsStandaloneImage ? "#8b3dff" : selectedOutlineColor}
                       anchorFill="#ffffff"
                       boundBoxFunc={(oldBox, newBox) =>
                         newBox.width < (selectionHasShape ? 24 : 80) ||
@@ -9901,6 +10033,115 @@ export default function App() {
                       role="tooltip"
                     >
                       {hoveredClientPrompt.text}
+                    </div>
+                  ) : null}
+                  {selectionBox.visible ? (
+                    <div
+                      className="workspace-selection-overlay"
+                      style={{
+                        left: Math.min(selectionBox.x, selectionBox.x + selectionBox.width) * stageScale,
+                        top: Math.min(selectionBox.y, selectionBox.y + selectionBox.height) * stageScale,
+                        width: Math.abs(selectionBox.width) * stageScale,
+                        height: Math.abs(selectionBox.height) * stageScale
+                      }}
+                    />
+                  ) : null}
+                  {selectedLayer && !imageCropEditLayerId ? (
+                    <div
+                      ref={layerTransformOverlayRef}
+                      className="layer-transform-overlay"
+                      style={{
+                        left: selectedLayer.x * stageScale,
+                        top: selectedLayer.y * stageScale,
+                        width: selectedLayer.width * stageScale,
+                        height: (selectedLayer.height || selectedLayer.width) * stageScale
+                      }}
+                    >
+                      <i className="top-left" />
+                      <i className="top-right" />
+                      <i className="bottom-right" />
+                      <i className="bottom-left" />
+                    </div>
+                  ) : null}
+                  {imageCropGuideRect ? (
+                    <div
+                      ref={imageCropGuideOverlayRef}
+                      className="image-crop-guide-overlay"
+                      style={{
+                        left: imageCropGuideRect.x * stageScale,
+                        top: imageCropGuideRect.y * stageScale,
+                        width: imageCropGuideRect.width * stageScale,
+                        height: imageCropGuideRect.height * stageScale
+                      }}
+                      onPointerDown={(event) => {
+                        if (event.target !== event.currentTarget || !imageCropEditLayer) return;
+                        const imageNode = layerRefs.current[imageCropEditLayer.id];
+                        if (!(imageNode instanceof Konva.Image)) return;
+                        event.preventDefault();
+                        event.currentTarget.setPointerCapture(event.pointerId);
+                        stageRef.current?.setPointersPositions(event.nativeEvent);
+                        handleImageCropDragStart(
+                          imageCropEditLayer.id,
+                          { cancelBubble: false, target: imageNode } as unknown as Konva.KonvaEventObject<DragEvent>
+                        );
+                      }}
+                      onPointerMove={(event) => {
+                        if (!event.currentTarget.hasPointerCapture(event.pointerId) || !imageCropEditLayer) return;
+                        const imageNode = layerRefs.current[imageCropEditLayer.id];
+                        if (!(imageNode instanceof Konva.Image)) return;
+                        stageRef.current?.setPointersPositions(event.nativeEvent);
+                        handleImageCropDragMove(
+                          imageCropEditLayer.id,
+                          { cancelBubble: false, target: imageNode } as unknown as Konva.KonvaEventObject<DragEvent>
+                        );
+                      }}
+                      onPointerUp={(event) => {
+                        if (!event.currentTarget.hasPointerCapture(event.pointerId) || !imageCropEditLayer) return;
+                        const imageNode = layerRefs.current[imageCropEditLayer.id];
+                        if (!(imageNode instanceof Konva.Image)) return;
+                        event.currentTarget.releasePointerCapture(event.pointerId);
+                        stageRef.current?.setPointersPositions(event.nativeEvent);
+                        handleImageCropDragEnd(
+                          imageCropEditLayer.id,
+                          { cancelBubble: false, target: imageNode } as unknown as Konva.KonvaEventObject<DragEvent>
+                        );
+                      }}
+                    >
+                      {["top-left", "top-right", "bottom-right", "bottom-left"].map((corner) => (
+                        <button
+                          key={corner}
+                          type="button"
+                          className={`image-crop-guide-overlay-handle ${corner}`}
+                          aria-label="Resize image crop"
+                          onPointerDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            event.currentTarget.setPointerCapture(event.pointerId);
+                            stageRef.current?.setPointersPositions(event.nativeEvent);
+                            handleImageCropScaleStart(
+                              imageCropEditLayer!.id,
+                              { cancelBubble: false } as Konva.KonvaEventObject<DragEvent>
+                            );
+                          }}
+                          onPointerMove={(event) => {
+                            if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+                            stageRef.current?.setPointersPositions(event.nativeEvent);
+                            handleImageCropScaleMove(
+                              imageCropEditLayer!.id,
+                              { cancelBubble: false } as Konva.KonvaEventObject<DragEvent>
+                            );
+                          }}
+                          onPointerUp={(event) => {
+                            if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+                            event.currentTarget.releasePointerCapture(event.pointerId);
+                            stageRef.current?.setPointersPositions(event.nativeEvent);
+                            handleImageCropScaleEnd(
+                              imageCropEditLayer!.id,
+                              { cancelBubble: false } as Konva.KonvaEventObject<DragEvent>
+                            );
+                          }}
+                        />
+                      ))}
                     </div>
                   ) : null}
                   {layerContextMenu ? (

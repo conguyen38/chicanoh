@@ -1669,6 +1669,7 @@ label.disabled {
   min-width: 100%;
   min-height: 100%;
   width: fit-content;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1681,6 +1682,7 @@ label.disabled {
   display: grid;
   justify-items: center;
   gap: 0;
+  overflow: visible;
 }
 
 .layer-context-menu {
@@ -6733,17 +6735,77 @@ label.disabled {
 }
 
 .canvas-workspace {
-  padding: 24px 38px 86px;
+  /* Keep an empty toolbar row from the first render to prevent layout shift
+     when a layer is selected. */
+  padding: 88px 38px 86px;
 }
 
 .stage-card {
   box-shadow: 0 10px 34px rgba(15, 23, 42, 0.12);
+  overflow: visible;
 }
 
 .stage-card.transparent {
   background: #ffffff;
   box-shadow: 0 10px 34px rgba(15, 23, 42, 0.12);
 }
+
+.image-crop-guide-overlay {
+  position: absolute;
+  z-index: 100;
+  box-sizing: border-box;
+  border: 2px solid #8b3dff;
+  pointer-events: auto;
+  cursor: grab;
+}
+
+.workspace-selection-overlay {
+  position: absolute;
+  z-index: 20;
+  box-sizing: border-box;
+  border: 1px dashed #60a5fa;
+  background: rgba(96, 165, 250, 0.12);
+  pointer-events: none;
+}
+
+.layer-transform-overlay {
+  position: absolute;
+  z-index: 25;
+  box-sizing: border-box;
+  border: 1.5px solid #8b3dff;
+  pointer-events: none;
+}
+.layer-transform-overlay i {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  box-sizing: border-box;
+  border: 1.5px solid #8b3dff;
+  background: #fff;
+}
+.layer-transform-overlay .top-left { left: -6px; top: -6px; }
+.layer-transform-overlay .top-right { right: -6px; top: -6px; }
+.layer-transform-overlay .bottom-right { right: -6px; bottom: -6px; }
+.layer-transform-overlay .bottom-left { left: -6px; bottom: -6px; }
+
+.image-crop-guide-overlay-handle {
+  position: absolute;
+  z-index: 1;
+  width: 13px;
+  height: 13px;
+  box-sizing: border-box;
+  border: 2px solid #8b3dff;
+  border-radius: 0;
+  background: #ffffff;
+  padding: 0;
+  pointer-events: auto;
+  cursor: nwse-resize;
+}
+
+.image-crop-guide-overlay-handle.top-left { left: -7px; top: -7px; }
+.image-crop-guide-overlay-handle.top-right { right: -7px; top: -7px; cursor: nesw-resize; }
+.image-crop-guide-overlay-handle.bottom-right { right: -7px; bottom: -7px; }
+.image-crop-guide-overlay-handle.bottom-left { left: -7px; bottom: -7px; cursor: nesw-resize; }
 
 @media (max-width: 1280px) {
   .workspace-grid {
