@@ -6792,6 +6792,15 @@ export default function App() {
       return;
     }
 
+    const effectId = event.dataTransfer.getData("application/x-effect-asset-id");
+    if (effectId) {
+      const effect = appState.effectAssets.find((item) => item.id === effectId);
+      if (!effect) return;
+      const targetFrame = findShapeLayerAtPoint(point);
+      placeImageInFrame(effect, targetFrame?.id, point, false);
+      return;
+    }
+
     const column = event.dataTransfer.getData("text/column");
     if (!column) return;
     addTextLayer(column, point.x, point.y);
@@ -9553,6 +9562,13 @@ export default function App() {
                           type="button"
                           className="effect-library-card"
                           title={effect.name}
+                          draggable={canEditWorkspace}
+                          onDragStart={(event) => {
+                            event.dataTransfer.effectAllowed = "copy";
+                            event.dataTransfer.setData("application/x-effect-asset-id", effect.id);
+                            event.dataTransfer.setData("text/plain", effect.name);
+                            setTemplateImageDragPreview(event, effect);
+                          }}
                           onClick={() => addEffectToCanvas(effect)}
                         >
                           <img src={getPreviewImageSrc(effect.dataUrl, 180)} alt={effect.name} loading="lazy" />
@@ -10623,20 +10639,38 @@ export default function App() {
                     <div
                       ref={layerTransformOverlayRef}
                       className="layer-transform-overlay"
-                      style={{
-                        left: selectedLayer.x * stageScale,
-                        top: selectedLayer.y * stageScale,
-                        width: selectedLayer.width * stageScale,
-                        height:
-                          (layerRefs.current[selectedLayer.id]?.height() ||
-                            selectedLayer.height ||
-                            selectedLayer.width) * stageScale
-                      }}
+                      style={
+                        {
+                          left: selectedLayer.x * stageScale,
+                          top: selectedLayer.y * stageScale,
+                          width: selectedLayer.width * stageScale,
+                          height:
+                            (layerRefs.current[selectedLayer.id]?.height() ||
+                              selectedLayer.height ||
+                              selectedLayer.width) * stageScale,
+                          "--overlay-color": selectedLayerIsStandaloneImage
+                            ? "#8b3dff"
+                            : selectedOutlineColor
+                        } as CSSProperties
+                      }
                     >
-                      <i className="top-left" />
-                      <i className="top-right" />
-                      <i className="bottom-right" />
-                      <i className="bottom-left" />
+                      {selectedLayerIsStandaloneImage || selectionHasShape ? (
+                        <>
+                          <i className="top-left" />
+                          <i className="top-right" />
+                          <i className="bottom-right" />
+                          <i className="bottom-left" />
+                        </>
+                      ) : (
+                        // Plain text only resizes via its side handles (see the
+                        // Transformer's enabledAnchors below), so the decorative
+                        // frame shows those same two handles instead of corners
+                        // that would wrongly suggest corner-resize is possible.
+                        <>
+                          <i className="middle-left" />
+                          <i className="middle-right" />
+                        </>
+                      )}
                     </div>
                   ) : null}
                   {imageCropGuideRect ? (

@@ -165,6 +165,7 @@ label.disabled {
 
 .login-shell {
   min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
   background:
@@ -229,6 +230,7 @@ label.disabled {
 
 .app-shell {
   height: 100vh;
+  height: 100dvh;
   min-height: 0;
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
@@ -240,6 +242,7 @@ label.disabled {
   position: sticky;
   top: 0;
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   background: var(--nav);
@@ -568,6 +571,7 @@ label.disabled {
   min-width: 0;
   min-height: 0;
   height: calc(100vh - var(--topbar-height));
+  height: calc(100dvh - var(--topbar-height));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -3288,6 +3292,7 @@ label.disabled {
 .side-nav.canva-rail {
   width: 76px;
   height: calc(100vh - var(--topbar-height));
+  height: calc(100dvh - var(--topbar-height));
   top: var(--topbar-height);
   background: #ffffff;
   color: #111827;
@@ -4107,6 +4112,7 @@ label.disabled {
 
 .project-manager-shell {
   height: 100vh;
+  height: 100dvh;
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -4637,6 +4643,7 @@ label.disabled {
 .project-content {
   width: min(1200px, calc(100% - 32px));
   min-height: calc(100vh - 170px);
+  min-height: calc(100dvh - 170px);
   padding: 16px 32px 56px;
   margin: 0 auto;
 }
@@ -6772,7 +6779,7 @@ label.disabled {
   position: absolute;
   z-index: 25;
   box-sizing: border-box;
-  border: 1.5px solid #8b3dff;
+  border: 1.5px solid var(--overlay-color, #8b3dff);
   pointer-events: none;
 }
 .layer-transform-overlay i {
@@ -6780,13 +6787,15 @@ label.disabled {
   width: 10px;
   height: 10px;
   box-sizing: border-box;
-  border: 1.5px solid #8b3dff;
+  border: 1.5px solid var(--overlay-color, #8b3dff);
   background: #fff;
 }
 .layer-transform-overlay .top-left { left: -6px; top: -6px; }
 .layer-transform-overlay .top-right { right: -6px; top: -6px; }
 .layer-transform-overlay .bottom-right { right: -6px; bottom: -6px; }
 .layer-transform-overlay .bottom-left { left: -6px; bottom: -6px; }
+.layer-transform-overlay .middle-left { left: -6px; top: 50%; margin-top: -6px; }
+.layer-transform-overlay .middle-right { right: -6px; top: 50%; margin-top: -6px; }
 
 .image-crop-guide-overlay-handle {
   position: absolute;
@@ -6839,7 +6848,9 @@ label.disabled {
   }
 }
 
-@media (max-width: 880px) {
+/* Phone-only: every iPad width (744px and up, either orientation) is handled by
+   the 700-1200px tablet band above, so this never hides the rail nav on a tablet. */
+@media (max-width: 699px) {
   .app-shell {
     display: block;
   }
@@ -6848,9 +6859,19 @@ label.disabled {
     display: none;
   }
 
+  .workspace-grid {
+    grid-template-columns: 1fr;
+    padding: 14px;
+  }
+}
+
+@media (max-width: 880px) {
   .admin-header {
     padding: 14px 16px;
-    align-items: flex-start;
+    /* align-items was meant for a flex-based header design that no longer
+       exists; on the actual grid-based .admin-header.canva-topbar it was the
+       only align-items rule in effect and squashed the logo/title/buttons to
+       the top of the 56px bar instead of centering them. */
     flex-wrap: wrap;
   }
 
@@ -6861,11 +6882,6 @@ label.disabled {
 
   .admin-header-actions .btn {
     flex: 1 1 130px;
-  }
-
-  .workspace-grid {
-    grid-template-columns: 1fr;
-    padding: 14px;
   }
 
   .canvas-shell {
@@ -7018,8 +7034,9 @@ label.disabled {
   pointer-events: none;
   box-shadow: 0 6px 18px rgba(15, 23, 42, 0.22);
 }
-/* iPad landscape: preserve a usable canvas while keeping editor controls reachable. */
-@media (min-width: 768px) and (max-width: 1180px) {
+/* iPad portrait and landscape (mini through Pro/Air 13"): keep the canvas usable
+   and every editor control reachable across the whole 700-1380px width band. */
+@media (min-width: 700px) and (max-width: 1380px) {
   .admin-header.canva-topbar {
     grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     padding: 0 8px;
@@ -7056,6 +7073,10 @@ label.disabled {
 
   .workspace-grid {
     grid-template-columns: 260px minmax(0, 1fr);
+    /* Undo the max-width:1280 rule's align-items:start - on the tall iPad
+       portrait viewports this bucket also covers, it shrank the canvas panel
+       to its content height and left a large empty strip below the canvas. */
+    align-items: stretch;
     overflow: hidden;
   }
 
@@ -7082,10 +7103,14 @@ label.disabled {
   }
 
   .selection-toolbar {
-    width: 100%;
-    max-width: 100%;
+    /* Stay shrink-wrapped and centered like the desktop pill (width: max-content
+       from the base rule) - stretching to width:100% pinned it to the left edge
+       as an oversized bar instead of a compact toolbar over the selection.
+       max-width:100% does not reliably clamp against the flex parent's actual
+       width here, so the cap is spelled out from the known rail (76px) + design
+       panel (260px) + toolbar insets (32px) that this width band always uses. */
+    max-width: min(860px, calc(100vw - 368px));
     overflow-x: auto;
-    justify-content: flex-start;
     scrollbar-width: none;
   }
 
@@ -7265,7 +7290,7 @@ label.disabled {
   line-height: 1.45;
 }
 
-@media (min-width: 768px) and (max-width: 1180px) {
+@media (min-width: 700px) and (max-width: 1380px) {
   .effect-library-grid {
     grid-template-columns: 1fr;
   }
@@ -7364,7 +7389,7 @@ label.disabled {
   padding-bottom: 12px;
 }
 
-@media (min-width: 768px) and (max-width: 1180px) {
+@media (min-width: 700px) and (max-width: 1380px) {
   .element-category-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -7667,5 +7692,18 @@ label.disabled {
   .account-delete-confirm {
     flex-direction: column;
     align-items: flex-start;
+  }
+}
+
+/* Touch devices (iPad included) never hover, so controls that only reveal on
+   :hover must stay visible when the primary pointer is a finger - otherwise
+   they are invisible and effectively unreachable. */
+@media (hover: none) {
+  .preview-template-btn,
+  .project-folder-card-actions,
+  .project-card-actions,
+  .effect-library-delete {
+    opacity: 1;
+    transform: none;
   }
 }
