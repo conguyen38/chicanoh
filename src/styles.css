@@ -6278,6 +6278,15 @@ label.disabled {
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
 }
 
+.selection-toolbar > *,
+.toolbar-export > * {
+  /* Without this, once the toolbar hits its max-width the flex algorithm
+     shrinks every field to fit instead of scrolling - a hex color field like
+     "#000000" was getting squeezed down to "#0". Keep every control at its
+     natural size and let the toolbar's own overflow-x:auto handle the rest. */
+  flex-shrink: 0;
+}
+
 .selection-toolbar {
   position: relative;
   left: auto;
