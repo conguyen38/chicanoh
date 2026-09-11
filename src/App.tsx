@@ -273,7 +273,12 @@ function getGridItemLimit(contentWidth: number, minCardWidth: number, gap: numbe
 }
 
 function getTwoRowPreviewLimit(contentWidth: number, minCardWidth: number, gap: number) {
-  return getGridItemLimit(contentWidth, minCardWidth, gap, PROJECT_PREVIEW_ROWS);
+  const columns = Math.max(1, Math.floor((contentWidth + gap) / (minCardWidth + gap)));
+  // A single-column (mobile) layout has no room to preview a second item per
+  // row, so a "2 row" cap would only ever show 2 cards. Show the full list
+  // instead of a near-useless preview in that case.
+  if (columns <= 1) return Infinity;
+  return columns * PROJECT_PREVIEW_ROWS;
 }
 
 function getProjectRouteFromPath(pathname: string): ProjectRoute | null {
