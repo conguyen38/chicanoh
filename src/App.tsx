@@ -3860,6 +3860,7 @@ export default function App() {
     transformer.nodes(nodes);
     transformer.forceUpdate();
     transformer.getLayer()?.batchDraw();
+    syncSelectedLayerTransformOverlay();
   }, [
     imageCropEditLayerId,
     isAdminWorkspace,
@@ -10054,7 +10055,10 @@ export default function App() {
                         left: selectedLayer.x * stageScale,
                         top: selectedLayer.y * stageScale,
                         width: selectedLayer.width * stageScale,
-                        height: (selectedLayer.height || selectedLayer.width) * stageScale
+                        height:
+                          (layerRefs.current[selectedLayer.id]?.height() ||
+                            selectedLayer.height ||
+                            selectedLayer.width) * stageScale
                       }}
                     >
                       <i className="top-left" />
