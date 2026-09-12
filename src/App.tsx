@@ -10635,7 +10635,7 @@ export default function App() {
                       }}
                     />
                   ) : null}
-                  {selectedLayer && !imageCropEditLayerId ? (
+                  {selectedLayer && !imageCropEditLayerId && !inlineTextEditor ? (
                     <div
                       ref={layerTransformOverlayRef}
                       className="layer-transform-overlay"
