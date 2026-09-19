@@ -273,7 +273,6 @@ type ProjectRoute =
   | { admin: boolean; kind: "folder-detail"; id: string }
   | { admin: boolean; kind: "design-detail"; id: string };
 
-const PROJECT_PREVIEW_ROWS = 2;
 const PROJECT_FOLDER_DETAIL_ROWS = 4;
 const PROJECT_CONTENT_FALLBACK_WIDTH = 1136;
 const PROJECT_FOLDER_CARD_MIN_WIDTH = 230;
@@ -284,15 +283,6 @@ const PROJECT_DESIGN_CARD_GAP = 24;
 function getGridItemLimit(contentWidth: number, minCardWidth: number, gap: number, rows: number) {
   const columns = Math.max(1, Math.floor((contentWidth + gap) / (minCardWidth + gap)));
   return columns * rows;
-}
-
-function getTwoRowPreviewLimit(contentWidth: number, minCardWidth: number, gap: number) {
-  const columns = Math.max(1, Math.floor((contentWidth + gap) / (minCardWidth + gap)));
-  // A single-column (mobile) layout has no room to preview a second item per
-  // row, so a "2 row" cap would only ever show 2 cards. Show the full list
-  // instead of a near-useless preview in that case.
-  if (columns <= 1) return Infinity;
-  return columns * PROJECT_PREVIEW_ROWS;
 }
 
 function getProjectRouteFromPath(pathname: string): ProjectRoute | null {
@@ -3148,16 +3138,6 @@ export default function App() {
     : projectListingMode !== "designs");
   const showProjectDesignsSection =
     !isAdminProjectRootHome && (isClientProjectLibrary || projectListingMode !== "folders");
-  const projectFolderPreviewLimit = getTwoRowPreviewLimit(
-    projectContentWidth,
-    PROJECT_FOLDER_CARD_MIN_WIDTH,
-    PROJECT_FOLDER_CARD_GAP
-  );
-  const projectDesignPreviewLimit = getTwoRowPreviewLimit(
-    projectContentWidth,
-    PROJECT_DESIGN_CARD_MIN_WIDTH,
-    PROJECT_DESIGN_CARD_GAP
-  );
   const projectFolderDetailPageSize = getGridItemLimit(
     projectContentWidth,
     PROJECT_DESIGN_CARD_MIN_WIDTH,
@@ -3169,12 +3149,8 @@ export default function App() {
     : 1;
   const currentProjectDesignPage = Math.min(projectDesignPage, projectFolderDetailPageCount);
   const projectFolderDetailPageStart = (currentProjectDesignPage - 1) * projectFolderDetailPageSize;
-  const displayedProjectFolders = isProjectHomeView && !isAdminProjectRootHome
-    ? visibleProjectFolders.slice(0, projectFolderPreviewLimit)
-    : visibleProjectFolders;
-  const displayedManagementItems = isProjectHomeView
-    ? visibleManagementItems.slice(0, projectDesignPreviewLimit)
-    : activeProjectFolder
+  const displayedProjectFolders = visibleProjectFolders;
+  const displayedManagementItems = activeProjectFolder
       ? visibleManagementItems.slice(
           projectFolderDetailPageStart,
           projectFolderDetailPageStart + projectFolderDetailPageSize
@@ -3182,10 +3158,6 @@ export default function App() {
       : visibleManagementItems;
   const showProjectDesignPagination =
     Boolean(activeProjectFolder) && visibleManagementItems.length > projectFolderDetailPageSize;
-  const showAllProjectFoldersButton =
-    isProjectHomeView && !isAdminProjectRootHome && visibleProjectFolders.length > projectFolderPreviewLimit;
-  const showAllProjectDesignsButton =
-    isProjectHomeView && !isAdminProjectRootHome && visibleManagementItems.length > projectDesignPreviewLimit;
   const showProjectViewToggle = Boolean(activeProjectFolder) || projectListingMode === "designs";
   const projectDesignListClass =
     showProjectViewToggle && projectViewMode === "list" ? "project-design-list" : "project-design-grid";
@@ -8632,20 +8604,6 @@ export default function App() {
                       </button>
                     </div>
                   )}
-                  {!isAdminProjectManager && showAllProjectFoldersButton ? (
-                    <button
-                      type="button"
-                      className="project-see-all-btn"
-                      onClick={() => {
-                        setBrowserPath(getProjectFolderListingPath(projectRouteAdmin));
-                        setProjectListingMode("folders");
-                        setProjectDesignPage(1);
-                        setIsFoldersCollapsed(false);
-                      }}
-                    >
-                      Xem tất cả
-                    </button>
-                  ) : null}
                 </div>
                 {!isFoldersCollapsed ? (
                   <div className="project-folder-cards">
@@ -8766,20 +8724,6 @@ export default function App() {
                       {isDesignsCollapsed ? <ChevronRight size={20} /> : <ChevronDown size={20} />}
                       <h2>Thiết kế</h2>
                     </button>
-                    {showAllProjectDesignsButton ? (
-                      <button
-                        type="button"
-                        className="project-see-all-btn"
-                        onClick={() => {
-                          setBrowserPath(getProjectDesignListingPath(projectRouteAdmin));
-                          setProjectListingMode("designs");
-                          setProjectDesignPage(1);
-                          setIsDesignsCollapsed(false);
-                        }}
-                      >
-                        Xem tất cả
-                      </button>
-                    ) : null}
                   </div>
                 ) : null}
                 {(activeProjectFolder || !isDesignsCollapsed) && displayedManagementItems.length ? (
