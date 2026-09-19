@@ -1337,7 +1337,7 @@ function clamp01(value: unknown, fallback = 0.5) {
 }
 
 const IMAGE_CROP_MIN_ZOOM = 1;
-const IMAGE_CROP_MAX_ZOOM = 4;
+const IMAGE_CROP_MAX_ZOOM = 12;
 
 function clampImageCropZoom(value: unknown, fallback = IMAGE_CROP_MIN_ZOOM) {
   const nextValue = Number(value);
@@ -7363,7 +7363,13 @@ export default function App() {
     if (!isShapeLayer(layer) || !pointer) return;
     event.cancelBubble = true;
     const distance = Math.max(1, Math.hypot(pointer.x - scaleDrag.center.x, pointer.y - scaleDrag.center.y));
-    const nextZoom = clampImageCropZoom(scaleDrag.startZoom * (distance / scaleDrag.startDistance));
+    // A linear distance ratio becomes too sluggish once an image is already
+    // cropped. Use a smooth exponential response so a short drag can keep
+    // zooming in while still allowing precise control near the starting size.
+    const zoomSensitivity = Math.max(120, Math.min(layer.width, layer.height || layer.width) * 0.45);
+    const nextZoom = clampImageCropZoom(
+      scaleDrag.startZoom * Math.exp((distance - scaleDrag.startDistance) / zoomSensitivity)
+    );
     scaleDrag.nextZoom = nextZoom;
     const imageNode = layerRefs.current[layerId];
     if (imageNode instanceof Konva.Image && layer.imageOriginalWidth && layer.imageOriginalHeight) {
