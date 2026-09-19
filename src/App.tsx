@@ -954,7 +954,7 @@ type ImageExportResult = "ready-to-save" | "downloaded";
 
 type PendingIosImage = {
   dataUrl: string;
-  file: File;
+  filename: string;
 };
 
 function isAppleMobileDevice() {
@@ -970,6 +970,18 @@ function downloadDataUrl(dataUrl: string, filename: string): ImageExportResult {
   link.click();
   link.remove();
   return "downloaded";
+}
+
+function dataUrlToFile(dataUrl: string, filename: string) {
+  const [header, encoded] = dataUrl.split(",", 2);
+  if (!header || !encoded) throw new Error("Invalid image data");
+  const mimeType = header.match(/data:([^;]+)/)?.[1] || "image/png";
+  const binary = atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return new File([bytes], filename, { type: mimeType });
 }
 
 async function sha256(value: string) {
@@ -7679,14 +7691,13 @@ export default function App() {
       const sizeLabel = pixelRatio === 1 ? "full" : `${String(pixelRatio).replace(".", "_")}x`;
       const filename = `${getExportName(template, selectedRow, dataset.keyColumn)}_${sizeLabel}.${ext}`;
       if (isAppleMobileDevice()) {
-        const blob = await (await fetch(dataUrl)).blob();
-        setPendingIosImage({
-          dataUrl,
-          file: new File([blob], filename, { type: blob.type })
-        });
+        setPendingIosImage({ dataUrl, filename });
         return "ready-to-save";
       }
       return downloadDataUrl(dataUrl, filename);
+    } catch (error) {
+      console.error("Could not export image", error);
+      return false;
     } finally {
       stage.scale({ x: currentScale, y: currentScale });
       stage.size({ width: currentWidth, height: currentHeight });
@@ -7726,12 +7737,12 @@ export default function App() {
 
   async function savePendingIosImage() {
     if (!pendingIosImage) return;
-    const { file } = pendingIosImage;
-    if (typeof navigator.share !== "function" || (navigator.canShare && !navigator.canShare({ files: [file] }))) {
-      showDownloadToast("Nhấn giữ ảnh xem trước, rồi chọn “Lưu hình ảnh”");
-      return;
-    }
     try {
+      const file = dataUrlToFile(pendingIosImage.dataUrl, pendingIosImage.filename);
+      if (typeof navigator.share !== "function" || (navigator.canShare && !navigator.canShare({ files: [file] }))) {
+        showDownloadToast("Nhấn giữ ảnh xem trước, rồi chọn “Lưu hình ảnh”");
+        return;
+      }
       // This call occurs directly from the button press, preserving iOS's user gesture.
       await navigator.share({ files: [file], title: file.name });
       setPendingIosImage(null);
