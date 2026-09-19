@@ -2840,6 +2840,20 @@ export default function App() {
     scrollLeft: number;
     scrollTop: number;
   } | null>(null);
+  const touchResizeRef = useRef<{
+    layerId: string;
+    corner: "top-left" | "top-right" | "bottom-left" | "bottom-right";
+    startClientX: number;
+    startClientY: number;
+    startX: number;
+    startY: number;
+    startWidth: number;
+    startHeight: number;
+    nextX: number;
+    nextY: number;
+    nextWidth: number;
+    nextHeight: number;
+  } | null>(null);
   const zoomAnchorRef = useRef<{
     pointerX: number;
     pointerY: number;
@@ -7397,6 +7411,82 @@ export default function App() {
     if (node) syncLayerTransformOverlayNode(node);
   }
 
+  function beginTouchLayerResize(
+    event: React.PointerEvent<HTMLElement>,
+    corner: "top-left" | "top-right" | "bottom-left" | "bottom-right"
+  ) {
+    const layer = selectedLayer;
+    const node = layer ? layerRefs.current[layer.id] : null;
+    if (!layer || !node || !canEditLayer(layer)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    touchResizeRef.current = {
+      layerId: layer.id,
+      corner,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: node.x(),
+      startY: node.y(),
+      startWidth: node.width(),
+      startHeight: node.height(),
+      nextX: node.x(),
+      nextY: node.y(),
+      nextWidth: node.width(),
+      nextHeight: node.height()
+    };
+  }
+
+  function updateTouchLayerResize(event: React.PointerEvent<HTMLElement>) {
+    const resize = touchResizeRef.current;
+    const layer = selectedLayer;
+    const node = resize && layer?.id === resize.layerId ? layerRefs.current[resize.layerId] : null;
+    if (!resize || !layer || !node || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    event.preventDefault();
+    const deltaX = (event.clientX - resize.startClientX) / stageScale;
+    const deltaY = (event.clientY - resize.startClientY) / stageScale;
+    const fromLeft = resize.corner.endsWith("left");
+    const fromTop = resize.corner.startsWith("top");
+    const minSize = isShapeLayer(layer) ? 24 : 80;
+    let nextWidth = Math.max(minSize, resize.startWidth + (fromLeft ? -deltaX : deltaX));
+    let nextHeight = Math.max(minSize, resize.startHeight + (fromTop ? -deltaY : deltaY));
+
+    if (isStandaloneImageLayer(layer)) {
+      const ratio = resize.startWidth / Math.max(1, resize.startHeight);
+      nextWidth = Math.max(
+        minSize,
+        Math.abs(deltaX) >= Math.abs(deltaY)
+          ? resize.startWidth + (fromLeft ? -deltaX : deltaX)
+          : (resize.startHeight + (fromTop ? -deltaY : deltaY)) * ratio
+      );
+      nextHeight = nextWidth / ratio;
+    }
+
+    const nextX = fromLeft ? resize.startX + resize.startWidth - nextWidth : resize.startX;
+    const nextY = fromTop ? resize.startY + resize.startHeight - nextHeight : resize.startY;
+    node.setAttrs({ x: nextX, y: nextY, width: nextWidth, height: nextHeight, scaleX: 1, scaleY: 1 });
+    node.getLayer()?.batchDraw();
+    transformerRef.current?.forceUpdate();
+    syncLayerTransformOverlayNode(node);
+    Object.assign(resize, { nextX, nextY, nextWidth, nextHeight });
+  }
+
+  function finishTouchLayerResize(event: React.PointerEvent<HTMLElement>) {
+    const resize = touchResizeRef.current;
+    if (!resize || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    touchResizeRef.current = null;
+    updateTemplate((current) => ({
+      ...current,
+      updatedAt: new Date().toISOString(),
+      layers: current.layers.map((layer) =>
+        layer.id === resize.layerId
+          ? { ...layer, x: resize.nextX, y: resize.nextY, width: resize.nextWidth, height: resize.nextHeight }
+          : layer
+      )
+    }));
+  }
+
   function handleLayerDragStart(layerId: string, event: Konva.KonvaEventObject<DragEvent>) {
     setAlignmentGuides([]);
     if (!canEditLayerById(layerId)) {
@@ -10734,10 +10824,16 @@ export default function App() {
                     >
                       {selectedLayerIsStandaloneImage || selectionHasShape ? (
                         <>
-                          <i className="top-left" />
-                          <i className="top-right" />
-                          <i className="bottom-right" />
-                          <i className="bottom-left" />
+                          {(["top-left", "top-right", "bottom-right", "bottom-left"] as const).map((corner) => (
+                            <i
+                              key={corner}
+                              className={corner}
+                              onPointerDown={(event) => beginTouchLayerResize(event, corner)}
+                              onPointerMove={updateTouchLayerResize}
+                              onPointerUp={finishTouchLayerResize}
+                              onPointerCancel={finishTouchLayerResize}
+                            />
+                          ))}
                         </>
                       ) : (
                         // Plain text only resizes via its side handles (see the

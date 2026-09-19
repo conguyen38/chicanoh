@@ -6812,6 +6812,9 @@ label.disabled {
   box-sizing: border-box;
   border: 1.5px solid var(--overlay-color, #8b3dff);
   background: #fff;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: nwse-resize;
 }
 .layer-transform-overlay .top-left { left: -12px; top: -12px; }
 .layer-transform-overlay .top-right { right: -12px; top: -12px; }
