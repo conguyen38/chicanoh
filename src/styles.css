@@ -6787,6 +6787,8 @@ label.disabled {
   border: 2px solid #8b3dff;
   pointer-events: auto;
   cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
 
 .workspace-selection-overlay {
@@ -6840,7 +6842,16 @@ label.disabled {
   background: #ffffff;
   padding: 0;
   pointer-events: auto;
+  touch-action: none;
   cursor: nwse-resize;
+}
+
+/* A larger invisible target makes crop scaling reliable on touch screens
+   without turning the visible handle into an oversized control. */
+.image-crop-guide-overlay-handle::after {
+  content: "";
+  position: absolute;
+  inset: -12px;
 }
 
 .image-crop-guide-overlay-handle.top-left { left: -7px; top: -7px; }
