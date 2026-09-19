@@ -2650,10 +2650,7 @@ export default function App() {
     typeof window !== "undefined" ? getProjectRouteFromPath(window.location.pathname) : null;
   const [appState, setAppStateBase] = useState<AppState>(() => {
     const loadedState = loadState();
-    if (
-      initialProjectRoute?.kind === "design-detail" &&
-      loadedState.templates.some((item) => item.id === initialProjectRoute.id)
-    ) {
+    if (initialProjectRoute?.kind === "design-detail") {
       return { ...loadedState, activeTemplateId: initialProjectRoute.id };
     }
     return loadedState;
