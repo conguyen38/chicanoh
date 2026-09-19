@@ -2823,6 +2823,8 @@ export default function App() {
   const isAdminWorkspaceRef = useRef(false);
   const undoStackRef = useRef<AppState[]>([]);
   const redoStackRef = useRef<AppState[]>([]);
+  const clientUndoStackRef = useRef<Template[]>([]);
+  const clientRedoStackRef = useRef<Template[]>([]);
   const lastSessionTouchRef = useRef(0);
   const remoteSyncEnabledRef = useRef(false);
   const remoteStateReadyRef = useRef(false);
@@ -2887,6 +2889,18 @@ export default function App() {
   }
 
   function undoLastChange() {
+    if (!isAdminWorkspace) {
+      const previousTemplate = clientUndoStackRef.current.pop();
+      if (!previousTemplate) return;
+      setClientDraftTemplate((current) => {
+        if (current) clientRedoStackRef.current.push(current);
+        return previousTemplate;
+      });
+      setInlineTextEditor(null);
+      setSelectedLayerIds([]);
+      setHistoryVersion((current) => current + 1);
+      return;
+    }
     const previousState = undoStackRef.current.pop();
     if (!previousState) return;
     setAppStateBase((current) => {
@@ -2900,6 +2914,23 @@ export default function App() {
   }
 
   function redoLastChange() {
+    if (!isAdminWorkspace) {
+      const nextTemplate = clientRedoStackRef.current.pop();
+      if (!nextTemplate) return;
+      setClientDraftTemplate((current) => {
+        if (current) {
+          clientUndoStackRef.current.push(current);
+          if (clientUndoStackRef.current.length > HISTORY_LIMIT) {
+            clientUndoStackRef.current.shift();
+          }
+        }
+        return nextTemplate;
+      });
+      setInlineTextEditor(null);
+      setSelectedLayerIds([]);
+      setHistoryVersion((current) => current + 1);
+      return;
+    }
     const nextState = redoStackRef.current.pop();
     if (!nextState) return;
     setAppStateBase((current) => {
@@ -2934,8 +2965,12 @@ export default function App() {
   useEffect(() => {
     if (isAdminWorkspace || showTemplateLibraryModal) {
       setClientDraftTemplate(null);
+      clientUndoStackRef.current = [];
+      clientRedoStackRef.current = [];
       return;
     }
+    clientUndoStackRef.current = [];
+    clientRedoStackRef.current = [];
     setClientDraftTemplate({
       ...canonicalTemplate,
       layers: canonicalTemplate.layers.map((layer) => ({ ...layer }))
@@ -3356,8 +3391,12 @@ export default function App() {
   const selectedFontStyleValue = selectedLayer
     ? `${selectedLayer.fontWeight}|${selectedLayer.fontStyle || "normal"}`
     : "";
-  const canUndo = historyVersion >= 0 && undoStackRef.current.length > 0;
-  const canRedo = historyVersion >= 0 && redoStackRef.current.length > 0;
+  const canUndo = historyVersion >= 0 && (isAdminWorkspace
+    ? undoStackRef.current.length > 0
+    : clientUndoStackRef.current.length > 0);
+  const canRedo = historyVersion >= 0 && (isAdminWorkspace
+    ? redoStackRef.current.length > 0
+    : clientRedoStackRef.current.length > 0);
   const selectedOutlineColor = selectionHasShape
     ? "#8b3dff"
     : selectedLayers.some((layer) => typeof layer.content !== "string")
@@ -4061,7 +4100,11 @@ export default function App() {
       }
       if (isControlShortcut && key === "z") {
         event.preventDefault();
-        undoLastChange();
+        if (event.shiftKey) {
+          redoLastChange();
+        } else {
+          undoLastChange();
+        }
         return;
       }
       const selectedIds = selectedLayerIdsRef.current;
@@ -4196,8 +4239,16 @@ export default function App() {
     if (!isAdminWorkspace) {
       setClientDraftTemplate((current) => {
         const baseTemplate = current?.id === template.id ? current : template;
-        return updater(baseTemplate);
+        const nextTemplate = updater(baseTemplate);
+        if (nextTemplate === baseTemplate) return baseTemplate;
+        clientUndoStackRef.current.push(baseTemplate);
+        if (clientUndoStackRef.current.length > HISTORY_LIMIT) {
+          clientUndoStackRef.current.shift();
+        }
+        clientRedoStackRef.current = [];
+        return nextTemplate;
       });
+      setHistoryVersion((version) => version + 1);
       return;
     }
     setAppState((current) => ({
