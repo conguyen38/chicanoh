@@ -5840,7 +5840,13 @@ label.disabled {
 
 .project-design-meta strong {
   display: block;
-  line-height: 24px;
+  height: auto;
+  min-height: 24px;
+  line-height: 1.4;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
 }
 
 .project-card-folder-link {
