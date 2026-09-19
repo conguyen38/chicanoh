@@ -950,29 +950,19 @@ function guessKeyColumn(columns: string[]) {
   return columns[0] || "";
 }
 
-type ImageExportResult = "shared" | "downloaded" | "cancelled";
+type ImageExportResult = "ready-to-save" | "downloaded";
+
+type PendingIosImage = {
+  dataUrl: string;
+  file: File;
+};
 
 function isAppleMobileDevice() {
   return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 }
 
-async function downloadDataUrl(dataUrl: string, filename: string): Promise<ImageExportResult> {
-  // iOS Safari sends <a download> files to Files/Downloads. Its share sheet,
-  // however, offers "Save Image" and retains the original image bytes.
-  if (isAppleMobileDevice() && typeof navigator.share === "function") {
-    try {
-      const blob = await (await fetch(dataUrl)).blob();
-      const image = new File([blob], filename, { type: blob.type });
-      if (!navigator.canShare || navigator.canShare({ files: [image] })) {
-        await navigator.share({ files: [image], title: filename });
-        return "shared";
-      }
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") return "cancelled";
-      // Use the normal download behavior when Web Share is unavailable or fails.
-    }
-  }
+function downloadDataUrl(dataUrl: string, filename: string): ImageExportResult {
   const link = document.createElement("a");
   link.href = dataUrl;
   link.download = filename;
@@ -2756,6 +2746,7 @@ export default function App() {
   const [storageWarning, setStorageWarning] = useState("");
   const [downloadToast, setDownloadToast] = useState("");
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
+  const [pendingIosImage, setPendingIosImage] = useState<PendingIosImage | null>(null);
   const [showPageSizeMenu, setShowPageSizeMenu] = useState(false);
   const [showCornerRadiusPopover, setShowCornerRadiusPopover] = useState(false);
   const [layerContextMenu, setLayerContextMenu] = useState<{
@@ -7686,10 +7677,16 @@ export default function App() {
       });
       const ext = mimeType === "image/jpeg" ? "jpg" : "png";
       const sizeLabel = pixelRatio === 1 ? "full" : `${String(pixelRatio).replace(".", "_")}x`;
-      return downloadDataUrl(
-        dataUrl,
-        `${getExportName(template, selectedRow, dataset.keyColumn)}_${sizeLabel}.${ext}`
-      );
+      const filename = `${getExportName(template, selectedRow, dataset.keyColumn)}_${sizeLabel}.${ext}`;
+      if (isAppleMobileDevice()) {
+        const blob = await (await fetch(dataUrl)).blob();
+        setPendingIosImage({
+          dataUrl,
+          file: new File([blob], filename, { type: blob.type })
+        });
+        return "ready-to-save";
+      }
+      return downloadDataUrl(dataUrl, filename);
     } finally {
       stage.scale({ x: currentScale, y: currentScale });
       stage.size({ width: currentWidth, height: currentHeight });
@@ -7719,14 +7716,30 @@ export default function App() {
       exportMimeType
     );
     showDownloadToast(
-      exportResult === "shared"
-        ? "Chọn “Lưu hình ảnh” để lưu vào Ảnh"
+      exportResult === "ready-to-save"
+        ? "Ảnh đã sẵn sàng để lưu vào Ảnh"
         : exportResult === "downloaded"
           ? "Đã tải ảnh xuống"
-          : exportResult === "cancelled"
-            ? "Đã hủy lưu ảnh"
-            : "Không thể tải ảnh"
+          : "Không thể tạo ảnh"
     );
+  }
+
+  async function savePendingIosImage() {
+    if (!pendingIosImage) return;
+    const { file } = pendingIosImage;
+    if (typeof navigator.share !== "function" || (navigator.canShare && !navigator.canShare({ files: [file] }))) {
+      showDownloadToast("Nhấn giữ ảnh xem trước, rồi chọn “Lưu hình ảnh”");
+      return;
+    }
+    try {
+      // This call occurs directly from the button press, preserving iOS's user gesture.
+      await navigator.share({ files: [file], title: file.name });
+      setPendingIosImage(null);
+      showDownloadToast("Đã mở bảng chia sẻ");
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      showDownloadToast("Nhấn giữ ảnh xem trước, rồi chọn “Lưu hình ảnh”");
+    }
   }
 
   async function saveTemplateForClient() {
@@ -9468,6 +9481,33 @@ export default function App() {
           <div className="download-toast" role="status" aria-live="polite">
             <Download size={17} />
             {downloadToast}
+          </div>
+        ) : null}
+
+        {pendingIosImage ? (
+          <div className="modal-backdrop ios-save-image-backdrop" role="presentation">
+            <section className="admin-modal ios-save-image-modal" role="dialog" aria-modal="true" aria-label="Lưu ảnh vào Ảnh">
+              <button
+                type="button"
+                className="modal-close-btn"
+                aria-label="Đóng"
+                onClick={() => setPendingIosImage(null)}
+              >
+                <X size={20} />
+              </button>
+              <h2>Lưu vào Ảnh</h2>
+              <p>Ảnh gốc đã sẵn sàng. Nhấn nút bên dưới, rồi chọn “Lưu hình ảnh” trong bảng Chia sẻ.</p>
+              <img
+                className="ios-save-image-preview"
+                src={pendingIosImage.dataUrl}
+                alt="Ảnh đã xuất"
+              />
+              <button type="button" className="download-menu-btn" onClick={savePendingIosImage}>
+                <Download size={18} />
+                Chia sẻ để lưu vào Ảnh
+              </button>
+              <p className="ios-save-image-fallback">Nếu không thấy bảng Chia sẻ, nhấn giữ ảnh xem trước rồi chọn “Lưu hình ảnh”.</p>
+            </section>
           </div>
         ) : null}
 

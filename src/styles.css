@@ -7716,3 +7716,49 @@ label.disabled {
     transform: none;
   }
 }
+
+.ios-save-image-modal {
+  position: relative;
+  width: min(520px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+}
+
+.ios-save-image-modal h2 {
+  margin: 0 36px 8px 0;
+}
+
+.ios-save-image-modal p {
+  color: #475569;
+  line-height: 1.5;
+}
+
+.modal-close-btn {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 0;
+  border-radius: 8px;
+  color: #475569;
+  background: #f1f5f9;
+}
+
+.ios-save-image-preview {
+  display: block;
+  width: 100%;
+  max-height: 42vh;
+  margin: 16px 0;
+  object-fit: contain;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.ios-save-image-fallback {
+  margin: 14px 0 0;
+  font-size: 13px;
+}
