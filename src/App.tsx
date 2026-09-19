@@ -2980,7 +2980,7 @@ export default function App() {
     });
     setImageCropEditLayerId(null);
     setImageCropPreviewFocus(null);
-  }, [canonicalTemplate.id, isAdminWorkspace, showTemplateLibraryModal]);
+  }, [canonicalTemplate, isAdminWorkspace, showTemplateLibraryModal]);
 
   useEffect(() => {
     if (!showTemplateLibraryModal) return;
