@@ -6774,6 +6774,12 @@ label.disabled {
   box-shadow: 0 10px 34px rgba(15, 23, 42, 0.12);
 }
 
+/* Prevent Safari from treating a resize drag as a page or canvas scroll. */
+.stage-card .konvajs-content,
+.stage-card canvas {
+  touch-action: none;
+}
+
 .image-crop-guide-overlay {
   position: absolute;
   z-index: 100;
@@ -6801,18 +6807,18 @@ label.disabled {
 }
 .layer-transform-overlay i {
   position: absolute;
-  width: 10px;
-  height: 10px;
+  width: 24px;
+  height: 24px;
   box-sizing: border-box;
   border: 1.5px solid var(--overlay-color, #8b3dff);
   background: #fff;
 }
-.layer-transform-overlay .top-left { left: -6px; top: -6px; }
-.layer-transform-overlay .top-right { right: -6px; top: -6px; }
-.layer-transform-overlay .bottom-right { right: -6px; bottom: -6px; }
-.layer-transform-overlay .bottom-left { left: -6px; bottom: -6px; }
-.layer-transform-overlay .middle-left { left: -6px; top: 50%; margin-top: -6px; }
-.layer-transform-overlay .middle-right { right: -6px; top: 50%; margin-top: -6px; }
+.layer-transform-overlay .top-left { left: -12px; top: -12px; }
+.layer-transform-overlay .top-right { right: -12px; top: -12px; }
+.layer-transform-overlay .bottom-right { right: -12px; bottom: -12px; }
+.layer-transform-overlay .bottom-left { left: -12px; bottom: -12px; }
+.layer-transform-overlay .middle-left { left: -12px; top: 50%; margin-top: -12px; }
+.layer-transform-overlay .middle-right { right: -12px; top: 50%; margin-top: -12px; }
 
 .image-crop-guide-overlay-handle {
   position: absolute;

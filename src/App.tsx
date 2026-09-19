@@ -10680,7 +10680,9 @@ export default function App() {
                           : ["middle-left", "middle-right"]
                       }
                       keepRatio={selectedLayerIsStandaloneImage}
-                      anchorSize={10}
+                      // Keep resize handles large enough to be reliably hit on
+                      // touch screens, regardless of the canvas zoom level.
+                      anchorSize={Math.max(10, 24 / stageScale)}
                       padding={0}
                       borderStroke={selectedLayerIsStandaloneImage ? "#8b3dff" : selectedOutlineColor}
                       anchorStroke={selectedLayerIsStandaloneImage ? "#8b3dff" : selectedOutlineColor}
