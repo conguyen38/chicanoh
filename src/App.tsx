@@ -950,13 +950,36 @@ function guessKeyColumn(columns: string[]) {
   return columns[0] || "";
 }
 
-function downloadDataUrl(dataUrl: string, filename: string) {
+type ImageExportResult = "shared" | "downloaded" | "cancelled";
+
+function isAppleMobileDevice() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+async function downloadDataUrl(dataUrl: string, filename: string): Promise<ImageExportResult> {
+  // iOS Safari sends <a download> files to Files/Downloads. Its share sheet,
+  // however, offers "Save Image" and retains the original image bytes.
+  if (isAppleMobileDevice() && typeof navigator.share === "function") {
+    try {
+      const blob = await (await fetch(dataUrl)).blob();
+      const image = new File([blob], filename, { type: blob.type });
+      if (!navigator.canShare || navigator.canShare({ files: [image] })) {
+        await navigator.share({ files: [image], title: filename });
+        return "shared";
+      }
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return "cancelled";
+      // Use the normal download behavior when Web Share is unavailable or fails.
+    }
+  }
   const link = document.createElement("a");
   link.href = dataUrl;
   link.download = filename;
   document.body.appendChild(link);
   link.click();
   link.remove();
+  return "downloaded";
 }
 
 async function sha256(value: string) {
@@ -7585,7 +7608,10 @@ export default function App() {
     setZoomLevel(1);
   }
 
-  async function exportImage(pixelRatio: 1 | 0.75 | 0.5, mimeType: "image/png" | "image/jpeg") {
+  async function exportImage(
+    pixelRatio: 1 | 0.75 | 0.5,
+    mimeType: "image/png" | "image/jpeg"
+  ): Promise<ImageExportResult | false> {
     const stage = stageRef.current;
     if (!stage || isExporting) return false;
     setIsExporting(true);
@@ -7609,11 +7635,10 @@ export default function App() {
       });
       const ext = mimeType === "image/jpeg" ? "jpg" : "png";
       const sizeLabel = pixelRatio === 1 ? "full" : `${String(pixelRatio).replace(".", "_")}x`;
-      downloadDataUrl(
+      return downloadDataUrl(
         dataUrl,
         `${getExportName(template, selectedRow, dataset.keyColumn)}_${sizeLabel}.${ext}`
       );
-      return true;
     } finally {
       stage.scale({ x: currentScale, y: currentScale });
       stage.size({ width: currentWidth, height: currentHeight });
@@ -7638,11 +7663,19 @@ export default function App() {
   async function downloadFromTopbar() {
     setShowDownloadMenu(false);
     showDownloadToast("Đang tải ảnh...");
-    const didDownload = await exportImage(
+    const exportResult = await exportImage(
       Number(exportScale) as 1 | 0.75 | 0.5,
       exportMimeType
     );
-    showDownloadToast(didDownload ? "Đã tải ảnh xuống" : "Không thể tải ảnh");
+    showDownloadToast(
+      exportResult === "shared"
+        ? "Chọn “Lưu hình ảnh” để lưu vào Ảnh"
+        : exportResult === "downloaded"
+          ? "Đã tải ảnh xuống"
+          : exportResult === "cancelled"
+            ? "Đã hủy lưu ảnh"
+            : "Không thể tải ảnh"
+    );
   }
 
   async function saveTemplateForClient() {
