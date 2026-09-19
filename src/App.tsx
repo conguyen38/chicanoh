@@ -2829,6 +2829,9 @@ export default function App() {
   const remoteSyncEnabledRef = useRef(false);
   const remoteStateReadyRef = useRef(false);
   const hasLoadedRemoteStateRef = useRef(false);
+  const pendingDeepLinkedTemplateIdRef = useRef(
+    initialProjectRoute?.kind === "design-detail" ? initialProjectRoute.id : null
+  );
   const remoteStateUpdatedAtRef = useRef<string | null>(null);
   const skipNextRemoteSaveRef = useRef(false);
   const remoteSaveVersionRef = useRef(0);
@@ -3497,11 +3500,15 @@ export default function App() {
       if (!active || !rawState) return;
       if (hasLoadedRemoteStateRef.current) return;
       const normalized = normalizeAppState(rawState);
+      const requestedTemplateId = pendingDeepLinkedTemplateIdRef.current;
       setAppStateBase((current) => {
         const backupTime = latestPersistedLibraryUpdateTime(normalized);
         const currentTime = latestPersistedLibraryUpdateTime(current);
         if (currentTime > backupTime) return current;
-        const nextState = mergePersistedLibraries(current, normalized);
+        const mergedState = mergePersistedLibraries(current, normalized);
+        const nextState = requestedTemplateId
+          ? { ...mergedState, activeTemplateId: requestedTemplateId }
+          : mergedState;
         appStateRef.current = nextState;
         return nextState;
       });
@@ -3542,12 +3549,17 @@ export default function App() {
         if (remoteState) {
           hasLoadedRemoteStateRef.current = true;
           const normalized = normalizeAppState(remoteState);
+          const requestedTemplateId = pendingDeepLinkedTemplateIdRef.current;
           setAppStateBase((current) => {
             skipNextRemoteSaveRef.current = true;
-            const nextState = mergePersistedLibraries(current, normalized);
+            const mergedState = mergePersistedLibraries(current, normalized);
+            const nextState = requestedTemplateId
+              ? { ...mergedState, activeTemplateId: requestedTemplateId }
+              : mergedState;
             appStateRef.current = nextState;
             return nextState;
           });
+          pendingDeepLinkedTemplateIdRef.current = null;
         }
         setCloudSync({
           status: "saved",
