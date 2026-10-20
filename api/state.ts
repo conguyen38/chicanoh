@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { requireAdmin } from "./_lib/auth.js";
+import { readAdminSession, requireAdmin } from "./_lib/auth.js";
 import { ensureTables, getSql } from "./_lib/db.js";
 import { resolveSessionUser } from "./_lib/users.js";
 
@@ -9,6 +9,17 @@ type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+// GET has no auth check - clients open a design link without an admin
+// account. "datasets" holds whatever the admin last imported (unit codes,
+// prices, sometimes real customer rows), so it must never ride along in a
+// response anyone on the internet can request; only an authenticated admin
+// session gets it back.
+function publicState(state: unknown) {
+  if (!isRecord(state)) return state;
+  const { datasets, ...rest } = state;
+  return rest;
 }
 
 function normalizeTimestamp(value: unknown) {
@@ -62,8 +73,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         WHERE id = ${STATE_ID}
         LIMIT 1
       `) as Array<{ data?: unknown; updated_at?: unknown }>;
+      const isAdminCaller = Boolean(readAdminSession(req));
+      const state = rows[0]?.data || null;
       res.status(200).json({
-        state: rows[0]?.data || null,
+        state: isAdminCaller ? state : publicState(state),
         updatedAt: normalizeTimestamp(rows[0]?.updated_at) || null
       });
       return;

@@ -1,4 +1,4 @@
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 
 const COOKIE_NAME = "oh_admin_session";
@@ -56,13 +56,39 @@ function secureCookieFlag(req: VercelRequest) {
   return Boolean(process.env.VERCEL || req.headers["x-forwarded-proto"] === "https");
 }
 
+const SCRYPT_PREFIX = "scrypt1";
+const SCRYPT_KEY_LENGTH = 64;
+
+// scrypt is a slow, memory-hard KDF, unlike a bare SHA-256 digest - it makes
+// brute-forcing a stolen hash table computationally expensive instead of
+// trivial. Each password gets its own random salt so two identical
+// passwords never produce the same stored hash.
 export function hashPassword(password: string) {
+  const salt = randomBytes(16).toString("hex");
+  const derived = scryptSync(password, salt, SCRYPT_KEY_LENGTH).toString("hex");
+  return `${SCRYPT_PREFIX}$${salt}$${derived}`;
+}
+
+function legacySha256Hash(password: string) {
   return createHash("sha256").update(password).digest("hex");
 }
 
-export function verifyHash(value: string, expectedHash: string) {
-  const actualHash = hashPassword(value);
-  return safeEqual(actualHash, expectedHash);
+// Pre-migration accounts still have a bare SHA-256 hex digest stored
+// (64 hex chars, no "scrypt1$" prefix). Those still verify so existing
+// admins keep working; verifyPassword below flags them so the caller can
+// transparently re-hash with scrypt on the next successful login.
+export function verifyHash(password: string, storedHash: string) {
+  if (storedHash.startsWith(`${SCRYPT_PREFIX}$`)) {
+    const [, salt, expected] = storedHash.split("$");
+    if (!salt || !expected) return false;
+    const derived = scryptSync(password, salt, SCRYPT_KEY_LENGTH).toString("hex");
+    return safeEqual(derived, expected);
+  }
+  return safeEqual(legacySha256Hash(password), storedHash);
+}
+
+export function needsRehash(storedHash: string) {
+  return !storedHash.startsWith(`${SCRYPT_PREFIX}$`);
 }
 
 export function createSessionCookie(

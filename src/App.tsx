@@ -833,9 +833,7 @@ const LOCAL_BACKUP_RECORD_KEY = "app";
 const ADMIN_KEY = "oh-property-maker-admin-ok";
 const ADMIN_LAST_ACTIVITY_KEY = "oh-property-maker-admin-last-activity";
 const ADMIN_ACCOUNT_KEY = "oh-property-maker-admin-account";
-const ADMIN_PASSWORD_HASH_KEY = "oh-property-maker-admin-password-hash";
 const DEFAULT_ADMIN_ACCOUNT = "admin";
-const DEFAULT_ADMIN_PASSWORD = "admin";
 const SUPER_ADMIN_NAME = "Super Admin";
 const MIN_ADMIN_PASSWORD_LENGTH = 4;
 const DEFAULT_TEMPLATE_FOLDER_ID = "folder_default";
@@ -902,14 +900,6 @@ function getStoredAdminAccount() {
   return localStorage.getItem(ADMIN_ACCOUNT_KEY) || DEFAULT_ADMIN_ACCOUNT;
 }
 
-function getStoredAdminPasswordHash() {
-  return (
-    localStorage.getItem(ADMIN_PASSWORD_HASH_KEY) ||
-    import.meta.env.VITE_ADMIN_CODE_HASH ||
-    ""
-  );
-}
-
 function touchAdminSession() {
   localStorage.setItem(ADMIN_KEY, "1");
   localStorage.setItem(ADMIN_LAST_ACTIVITY_KEY, String(Date.now()));
@@ -924,16 +914,6 @@ function isAdminSessionValid() {
   if (localStorage.getItem(ADMIN_KEY) !== "1") return false;
   const lastActivity = Number(localStorage.getItem(ADMIN_LAST_ACTIVITY_KEY) || 0);
   return Boolean(lastActivity && Date.now() - lastActivity <= ADMIN_IDLE_TIMEOUT_MS);
-}
-
-function isLocalAdminFallbackAllowed() {
-  if (import.meta.env.DEV) return true;
-  if (typeof window === "undefined") return false;
-  return ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
-}
-
-function shouldRestoreLocalAdminSession() {
-  return isLocalAdminFallbackAllowed() && isAdminSessionValid();
 }
 
 function toFileSlug(value: string) {
@@ -982,14 +962,6 @@ function dataUrlToFile(dataUrl: string, filename: string) {
     bytes[index] = binary.charCodeAt(index);
   }
   return new File([bytes], filename, { type: mimeType });
-}
-
-async function sha256(value: string) {
-  const bytes = new TextEncoder().encode(value);
-  const hash = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(hash))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
 }
 
 function fileToDataUrl(file: File): Promise<string> {
@@ -2659,7 +2631,7 @@ export default function App() {
   const [historyVersion, setHistoryVersion] = useState(0);
   const [selectedRowIndex, setSelectedRowIndex] = useState(0);
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>(["layer_code"]);
-  const [isAdmin, setIsAdmin] = useState(() => shouldRestoreLocalAdminSession());
+  const [isAdmin, setIsAdmin] = useState(() => isAdminSessionValid());
   const isAdminWorkspace = isAdmin && isAdminPath;
   const [editingPageId, setEditingPageId] = useState<string | null>(null);
   const [pagePendingDeleteId, setPagePendingDeleteId] = useState<string | null>(null);
@@ -3588,10 +3560,8 @@ export default function App() {
         } | null;
         if (!active || !response.ok) return;
         if (!data?.authenticated) {
-          if (!isLocalAdminFallbackAllowed()) {
-            clearAdminSession();
-            setIsAdmin(false);
-          }
+          clearAdminSession();
+          setIsAdmin(false);
           return;
         }
         touchAdminSession();
@@ -5284,43 +5254,10 @@ export default function App() {
         }
         return;
       }
-      if (response.status !== 404 && response.status !== 500) {
-        setAdminError(errorMessageFromApi(data, "Tai khoan hoac mat khau khong dung"));
-        return;
-      }
-      if (!isLocalAdminFallbackAllowed()) {
-        setAdminError("Khong the dang nhap admin luc nay");
-        return;
-      }
+      setAdminError(errorMessageFromApi(data, "Tai khoan hoac mat khau khong dung"));
     } catch {
-      if (!isLocalAdminFallbackAllowed()) {
-        setAdminError("Khong the dang nhap admin luc nay");
-        return;
-      }
-      // Fall back to local admin only when the API is not running in local development.
+      setAdminError("Khong the dang nhap admin luc nay");
     }
-    if (adminLoginName.trim() !== getStoredAdminAccount()) {
-      setAdminError("Tài khoản quản trị không đúng");
-      return;
-    }
-    const hash = await sha256(adminCode.trim());
-    const storedHash = getStoredAdminPasswordHash();
-    const matchesLocalPassword = storedHash
-      ? hash === storedHash
-      : adminCode.trim() === DEFAULT_ADMIN_PASSWORD;
-    if (!matchesLocalPassword) {
-      setAdminError("Mật khẩu quản trị không đúng");
-      return;
-    }
-    touchAdminSession();
-    lastSessionTouchRef.current = Date.now();
-    skipNextRemoteSaveRef.current = false;
-    setIsAdmin(true);
-    // The offline fallback has no account table, so treat the local login as the
-    // super admin to keep the workspace usable without the API.
-    applyAdminIdentity({ account: getStoredAdminAccount(), role: "super_admin" });
-    setAdminLoginName(getStoredAdminAccount());
-    setAdminCode("");
   }
 
   function applyAdminIdentity(identity: {
@@ -5410,7 +5347,6 @@ export default function App() {
         if (!response.ok) {
           throw new Error(errorMessageFromApi(data, "Khong luu duoc tai khoan admin"));
         }
-        localStorage.setItem(ADMIN_PASSWORD_HASH_KEY, await sha256(adminNewPassword.trim()));
         setAdminNewPassword("");
         setAdminConfirmPassword("");
         setAdminSettingsMessage("Đã đổi mật khẩu quản trị");
@@ -5422,10 +5358,7 @@ export default function App() {
         return;
       }
     }
-    localStorage.setItem(ADMIN_PASSWORD_HASH_KEY, await sha256(adminNewPassword.trim()));
-    setAdminNewPassword("");
-    setAdminConfirmPassword("");
-    setAdminSettingsMessage("Đã đổi mật khẩu quản trị");
+    setAdminSettingsError("Cần kết nối máy chủ để đổi mật khẩu quản trị");
   }
 
   function resetAccountManagerForms() {
@@ -5574,9 +5507,6 @@ export default function App() {
       "Không đổi được mật khẩu"
     );
     if (!saved) return;
-    if (user.id === adminUserId) {
-      localStorage.setItem(ADMIN_PASSWORD_HASH_KEY, await sha256(password));
-    }
     setMemberResetPasswordId(null);
     setMemberResetPassword("");
   }

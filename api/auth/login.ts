@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { createSessionCookie, verifyHash } from "../_lib/auth.js";
-import { findAdminUserByAccount, getSql } from "../_lib/db.js";
+import { createSessionCookie, hashPassword, needsRehash, verifyHash } from "../_lib/auth.js";
+import { findAdminUserByAccount, getSql, updateAdminUserPassword } from "../_lib/db.js";
 
 const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const RATE_LIMIT_MAX_ATTEMPTS = 8;
@@ -70,6 +70,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     loginAttempts.delete(limitKey);
+    if (needsRehash(user.passwordHash)) {
+      // Transparently upgrade a pre-scrypt (bare SHA-256) hash now that we
+      // have the plaintext, instead of requiring a manual password reset.
+      await updateAdminUserPassword(user.id, hashPassword(password), sql).catch((error) => {
+        console.error("Could not upgrade password hash", error);
+      });
+    }
     res.setHeader(
       "Set-Cookie",
       createSessionCookie(req, { account: user.account, id: user.id, role: user.role })

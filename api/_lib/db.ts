@@ -90,17 +90,32 @@ export async function getAdminConfig(sql = getSql()): Promise<AdminConfig> {
     LIMIT 1
   `) as Array<{ value?: Partial<AdminConfig> }>;
   const saved = rows[0]?.value as Partial<AdminConfig> | undefined;
+  if (typeof saved?.passwordHash === "string" && saved.passwordHash.trim()) {
+    return {
+      account:
+        typeof saved?.account === "string" && saved.account.trim()
+          ? saved.account.trim()
+          : process.env.ADMIN_ACCOUNT || DEFAULT_ADMIN_ACCOUNT,
+      passwordHash: saved.passwordHash.trim()
+    };
+  }
+  // Only reached the first time this deploys, before any admin row/setting
+  // exists yet. ADMIN_PASSWORD_HASH must be set explicitly in production -
+  // VITE_-prefixed vars ship in the public client bundle, so they must never
+  // be trusted as a server-side credential source, and silently seeding a
+  // guessable default would hand out admin access to anyone who finds it.
+  const passwordHash = process.env.ADMIN_PASSWORD_HASH;
+  if (passwordHash) {
+    return { account: process.env.ADMIN_ACCOUNT || DEFAULT_ADMIN_ACCOUNT, passwordHash };
+  }
+  if (process.env.VERCEL) {
+    throw new Error(
+      "Missing ADMIN_PASSWORD_HASH - set it (a scrypt or sha256 hash, never the plain password) before the admin account can be seeded"
+    );
+  }
   return {
-    account:
-      typeof saved?.account === "string" && saved.account.trim()
-        ? saved.account.trim()
-        : process.env.ADMIN_ACCOUNT || DEFAULT_ADMIN_ACCOUNT,
-    passwordHash:
-      typeof saved?.passwordHash === "string" && saved.passwordHash.trim()
-        ? saved.passwordHash.trim()
-        : process.env.ADMIN_PASSWORD_HASH ||
-          process.env.VITE_ADMIN_CODE_HASH ||
-          createHash("sha256").update(DEFAULT_ADMIN_PASSWORD).digest("hex")
+    account: process.env.ADMIN_ACCOUNT || DEFAULT_ADMIN_ACCOUNT,
+    passwordHash: createHash("sha256").update(DEFAULT_ADMIN_PASSWORD).digest("hex")
   };
 }
 
